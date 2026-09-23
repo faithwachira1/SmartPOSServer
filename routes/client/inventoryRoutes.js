@@ -8,6 +8,7 @@ const router = Router();
 router.use(requireActive);
 
 router.get('/', c.list);
+router.get('/movements', c.movements);
 router.post('/adjust', roles('owner', 'manager'), c.adjust);
 router.get('/:productId/history', c.history);
 

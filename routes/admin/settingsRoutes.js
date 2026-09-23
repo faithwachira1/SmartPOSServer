@@ -13,6 +13,9 @@ router.get('/ai', c.getAi);
 router.patch('/ai', c.updateAi);
 router.post('/ai/test/:key', c.testAiProvider);
 
+router.get('/mpesa', c.getMpesaConfig);
+router.patch('/mpesa', c.updateMpesaConfig);
+
 router.get('/downloads', c.getDownloads);
 router.post('/downloads', c.addDownload);
 router.patch('/downloads/reorder', c.reorderDownloads);

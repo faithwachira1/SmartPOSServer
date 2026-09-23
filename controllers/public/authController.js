@@ -12,7 +12,12 @@ const PlatformSetting = require('../../models/admin/PlatformSetting');
 const Plan = require('../../models/admin/Plan');
 const emailService = require('../../services/emailService');
 const invoiceService = require('../../services/invoiceService');
-const { hashPassword, signAccessToken, signRefreshToken } = require('../../utils/jwt');
+const {
+  hashPassword,
+  signAccessToken,
+  signRefreshToken,
+  verifyRefreshToken,
+} = require('../../utils/jwt');
 const { slugify } = require('../../utils/slugify');
 
 function randomPassword(len = 12) {
@@ -38,6 +43,20 @@ function formatDueDate(d) {
     timeStyle: 'short',
     timeZone: 'Africa/Nairobi',
   });
+}
+
+function computePeriodEnd(plan, from) {
+  const interval = plan?.price?.interval || 'month';
+  const base = new Date(from);
+
+  if (interval === 'year') {
+    return new Date(base.getTime() + 365 * 24 * 60 * 60 * 1000);
+  }
+  if (interval === 'once') {
+    return null;
+  }
+  // default: month
+  return new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
 }
 
 async function sendRegistrationEmails({ tenant, owner, plan, invoice }) {
@@ -183,6 +202,9 @@ const register = asyncHandler(async (req, res) => {
   const slug = await uniqueSlug(businessName);
   const passwordHash = await hashPassword(password);
 
+  const now = new Date();
+  const periodEnd = computePeriodEnd(plan, now);
+
   const tenant = await Tenant.create({
     name: businessName,
     slug,
@@ -190,8 +212,8 @@ const register = asyncHandler(async (req, res) => {
     businessType: businessType || 'retail',
     status: 'pending_user',
     planId: plan.code,
-    registeredAt: new Date(),
-    expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+    registeredAt: now,
+    expiresAt: periodEnd,
   });
 
   const owner = await User.create({
@@ -212,8 +234,8 @@ const register = asyncHandler(async (req, res) => {
     tenantId: tenant._id,
     status: 'pending',
     priority: 'normal',
-    registeredAt: new Date(),
-    slaDeadline: new Date(Date.now() + 48 * 60 * 60 * 1000),
+    registeredAt: now,
+    slaDeadline: new Date(now.getTime() + 48 * 60 * 60 * 1000),
   });
 
   let createdInvoice = null;
@@ -363,6 +385,46 @@ const login = asyncHandler(async (req, res) => {
   });
 });
 
+const refresh = asyncHandler(async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
+    throw ApiError.badRequest('NO_REFRESH', 'Refresh token required');
+  }
+
+  let payload;
+  try {
+    payload = verifyRefreshToken(refreshToken);
+  } catch {
+    throw ApiError.unauthorized('INVALID_REFRESH', 'Invalid or expired refresh token');
+  }
+
+  if (payload.scope === 'platform') {
+    throw ApiError.forbidden('NOT_CLIENT', 'Invalid scope');
+  }
+
+  const user = await User.findById(payload.sub);
+  if (!user) throw ApiError.unauthorized('INVALID_USER', 'User not found');
+  if (!['active', 'pending_user'].includes(user.status)) {
+    throw ApiError.forbidden('INACTIVE', 'Account inactive');
+  }
+
+  const tenant = await Tenant.findById(user.tenantId).lean();
+  if (!tenant) throw ApiError.notFound('TENANT_NOT_FOUND', 'Tenant not found');
+
+  const scope = tenant.status === 'active' ? 'active' : 'pending';
+  const newPayload = {
+    sub: user._id.toString(),
+    tenantId: tenant._id.toString(),
+    role: user.role,
+    scope,
+  };
+
+  return ok(res, {
+    accessToken: signAccessToken(newPayload),
+    refreshToken: signRefreshToken(newPayload),
+  });
+});
+
 const verifyEmail = asyncHandler(async (req, res) => {
   const { token } = req.body;
   if (!token) throw ApiError.badRequest('NO_TOKEN', 'Verification token required');
@@ -483,6 +545,7 @@ const acceptInvite = asyncHandler(async (req, res) => {
 module.exports = {
   register,
   login,
+  refresh,
   verifyEmail,
   forgotPassword,
   resetPassword,

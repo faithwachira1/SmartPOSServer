@@ -7,6 +7,7 @@ const Sale = require('../../models/client/Sale');
 const Invoice = require('../../models/client/Invoice');
 const Tenant = require('../../models/admin/Tenant');
 const User = require('../../models/client/User');
+const Subscription = require('../../models/admin/Subscription');
 
 async function notifyInvoicePaid(invoice, method, reference) {
   try {
@@ -34,61 +35,180 @@ async function notifyInvoicePaid(invoice, method, reference) {
       'paymentReceived email sent (callback)'
     );
   } catch (err) {
-    logger.error({ err: err.message, invoiceNumber: invoice.invoiceNumber }, 'paymentReceived email failed');
+    logger.error(
+      { err: err.message, invoiceNumber: invoice.invoiceNumber },
+      'paymentReceived email failed'
+    );
   }
+}
+
+async function handleSalePayment(payment, parsed) {
+  if (!payment.saleId) return;
+
+  await Sale.updateOne(
+    { _id: payment.saleId },
+    {
+      $set: {
+        paymentStatus: parsed.success ? 'paid' : 'failed',
+        paidAt: parsed.success ? new Date() : null,
+      },
+    }
+  );
+
+  logger.info(
+    {
+      saleId: String(payment.saleId),
+      success: parsed.success,
+      receipt: parsed.mpesaReceiptNumber,
+    },
+    'STK callback: sale updated'
+  );
+}
+
+async function handleInvoicePayment(payment, parsed) {
+  let invoice = null;
+
+  if (payment.invoiceId) {
+    invoice = await Invoice.findById(payment.invoiceId);
+  }
+
+  if (!invoice) {
+    invoice = await Invoice.findOne({
+      'stkLastRequest.checkoutRequestId': parsed.checkoutRequestId,
+    });
+  }
+
+  if (!invoice) return;
+
+  if (parsed.success) {
+    invoice.status = 'paid';
+    invoice.amountPaid = invoice.amountDue;
+    invoice.amountDue = 0;
+    invoice.paidAt = new Date();
+    invoice.paymentMethod = 'mpesa_stk';
+    invoice.paymentRef = parsed.mpesaReceiptNumber || null;
+    await invoice.save();
+
+    logger.info(
+      {
+        invoiceNumber: invoice.invoiceNumber,
+        receipt: parsed.mpesaReceiptNumber,
+        amount: parsed.amount,
+      },
+      'invoice paid via STK callback'
+    );
+
+    notifyInvoicePaid(invoice, 'mpesa_stk', parsed.mpesaReceiptNumber).catch(
+      () => {}
+    );
+  } else {
+    logger.warn(
+      { invoiceNumber: invoice.invoiceNumber, resultDesc: parsed.resultDesc },
+      'STK payment failed for invoice'
+    );
+  }
+}
+
+async function handleSubscriptionPayment(payment, parsed) {
+  if (!parsed.success) {
+    logger.warn(
+      { tenantId: String(payment.tenantId), resultDesc: parsed.resultDesc },
+      'STK subscription payment failed'
+    );
+    return;
+  }
+
+  const tenant = await Tenant.findById(payment.tenantId);
+  if (!tenant) return;
+
+  const now = new Date();
+  const existingExpiry = tenant.expiresAt ? new Date(tenant.expiresAt) : null;
+  const base = existingExpiry && existingExpiry > now ? existingExpiry : now;
+  const nextExpiry = new Date(base);
+  nextExpiry.setMonth(nextExpiry.getMonth() + 1);
+
+  tenant.expiresAt = nextExpiry;
+  if (tenant.status === 'expired') tenant.status = 'active';
+  await tenant.save();
+
+  await Subscription.create({
+    tenantId: tenant._id,
+    plan: tenant.planId,
+    cycle: 'month',
+    status: 'active',
+    amountMinor: Math.round((payment.amount || 0) * 100),
+    currency: payment.currency,
+    periodStart: base,
+    periodEnd: nextExpiry,
+    autoRenew: false,
+    metadata: {
+      paymentId: payment._id,
+      providerRef: payment.providerRef,
+      mpesaReceipt: parsed.mpesaReceiptNumber || null,
+    },
+  });
+
+  logger.info(
+    {
+      tenantId: String(tenant._id),
+      receipt: parsed.mpesaReceiptNumber,
+      expiresAt: nextExpiry,
+    },
+    'subscription extended via STK callback'
+  );
 }
 
 const mpesaCallback = asyncHandler(async (req, res) => {
   const payload = req.body;
   const parsed = mpesaService.parseCallback(payload);
 
-  if (parsed.checkoutRequestId) {
-    const payment = await Payment.findOne({ providerRef: parsed.checkoutRequestId });
-    if (payment) {
-      payment.status = parsed.success ? 'success' : 'failed';
-      payment.providerPayload = payload;
-      if (parsed.success && parsed.mpesaReceiptNumber) {
-        payment.providerRef = parsed.mpesaReceiptNumber;
-      }
-      await payment.save();
+  if (!parsed.checkoutRequestId) {
+    return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+  }
 
-      if (parsed.success && payment.saleId) {
-        await Sale.updateOne({ _id: payment.saleId }, { $set: { paymentStatus: 'paid' } });
-      }
+  const payment = await Payment.findOne({
+    providerRef: parsed.checkoutRequestId,
+  });
+
+  if (payment) {
+    payment.status = parsed.success ? 'success' : 'failed';
+    payment.providerPayload = payload;
+    if (parsed.success && parsed.mpesaReceiptNumber) {
+      payment.providerRef = parsed.mpesaReceiptNumber;
     }
+    await payment.save();
 
+    try {
+      if (payment.purpose === 'subscription') {
+        await handleSubscriptionPayment(payment, parsed);
+      } else if (payment.purpose === 'invoice') {
+        await handleInvoicePayment(payment, parsed);
+      } else {
+        await handleSalePayment(payment, parsed);
+      }
+    } catch (err) {
+      logger.error(
+        {
+          err: err.message,
+          paymentId: String(payment._id),
+          purpose: payment.purpose,
+        },
+        'STK callback dispatch failed'
+      );
+    }
+  } else {
     const invoice = await Invoice.findOne({
       'stkLastRequest.checkoutRequestId': parsed.checkoutRequestId,
     });
-
-    if (invoice && parsed.success) {
-      const paidAt = new Date();
-
-      invoice.status = 'paid';
-      invoice.amountPaid = invoice.amountDue;
-      invoice.amountDue = 0;
-      invoice.paidAt = paidAt;
-      invoice.paymentMethod = 'mpesa_stk';
-      invoice.paymentRef = parsed.mpesaReceiptNumber || null;
-      await invoice.save();
-
-      logger.info(
-        {
-          invoiceNumber: invoice.invoiceNumber,
-          receipt: parsed.mpesaReceiptNumber,
-          amount: parsed.amount,
-        },
-        'invoice paid via STK callback'
+    if (invoice) {
+      await handleInvoicePayment(
+        { invoiceId: invoice._id, tenantId: invoice.tenantId },
+        parsed
       );
-
-      notifyInvoicePaid(invoice, 'mpesa_stk', parsed.mpesaReceiptNumber).catch(() => {});
-    } else if (invoice && !parsed.success) {
+    } else {
       logger.warn(
-        {
-          invoiceNumber: invoice.invoiceNumber,
-          resultDesc: parsed.resultDesc,
-        },
-        'STK payment failed'
+        { checkoutRequestId: parsed.checkoutRequestId },
+        'STK callback: no matching payment or invoice'
       );
     }
   }

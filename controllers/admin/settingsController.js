@@ -54,7 +54,11 @@ const PROVIDER_DEFAULTS = [
 
 const VALID_DOWNLOAD_TYPES = ['windows', 'macos', 'linux', 'android', 'ios'];
 
-// ── Core settings ──────────────────────────────────────
+const MPESA_DEFAULTS = {
+  stkCheckoutEnabled: false,
+};
+
+// ── Core settings ───────────────────────────────────────
 
 const get = asyncHandler(async (_req, res) => {
   const docs = await PlatformSetting.find().lean();
@@ -104,7 +108,7 @@ const features = asyncHandler(async (_req, res) => {
   return ok(res, map);
 });
 
-// ── AI ─────────────────────────────────────────────────
+// ── AI ───────────────────────────────────────────────────
 
 function maskKey(key) {
   if (!key) return '';
@@ -239,7 +243,40 @@ const testAiProvider = asyncHandler(async (req, res) => {
   }
 });
 
-// ── Downloads ──────────────────────────────────────────
+// ── M-Pesa ──────────────────────────────────────────────
+
+async function loadMpesaConfig() {
+  const doc = await PlatformSetting.findOne({ key: 'mpesa_config' }).lean();
+  const stored = doc?.value && typeof doc.value === 'object' ? doc.value : {};
+  return {
+    stkCheckoutEnabled: stored.stkCheckoutEnabled === true,
+    updatedAt: doc?.updatedAt || null,
+  };
+}
+
+const getMpesaConfig = asyncHandler(async (_req, res) => {
+  const config = await loadMpesaConfig();
+  return ok(res, config);
+});
+
+const updateMpesaConfig = asyncHandler(async (req, res) => {
+  const incoming = req.body || {};
+  const current = await loadMpesaConfig();
+
+  const next = {
+    stkCheckoutEnabled:
+      typeof incoming.stkCheckoutEnabled === 'boolean'
+        ? incoming.stkCheckoutEnabled
+        : current.stkCheckoutEnabled,
+  };
+
+  await PlatformSetting.setValue('mpesa_config', next, req.admin.id);
+
+  const saved = await loadMpesaConfig();
+  return ok(res, saved);
+});
+
+// ── Downloads ───────────────────────────────────────────
 
 function normalizeLink(link) {
   if (!link) return link;
@@ -368,8 +405,6 @@ const reorderDownloads = asyncHandler(async (req, res) => {
   return ok(res, items);
 });
 
-// ── Exports ────────────────────────────────────────────
-
 module.exports = {
   get,
   update,
@@ -380,6 +415,9 @@ module.exports = {
   getAi,
   updateAi,
   testAiProvider,
+
+  getMpesaConfig,
+  updateMpesaConfig,
 
   getDownloads,
   addDownload,

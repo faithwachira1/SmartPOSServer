@@ -1,130 +1,139 @@
-const { chat } = require('./aiService');
-const DailyMetric = require('../models/client/DailyMetric');
-const Product = require('../models/client/Product');
-const Sale = require('../models/client/Sale');
-const Tenant = require('../models/admin/Tenant');
+const PlatformSetting = require('../models/admin/PlatformSetting');
 const AiConversation = require('../models/client/AiConversation');
-const { ApiError } = require('../utils/apiError');
+const { chat } = require('./aiService');
+const { buildContext, formatContextForPrompt } = require('./chatContextService');
+const { getRedis } = require('../config/redis');
+const { logger } = require('../utils/logger');
 
-function startOfDay(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+const PROMPT_CACHE_KEY_PREFIX = 'chat:client:system_prompt:';
+const PROMPT_TTL = 300;
+
+async function isClientAiEnabled() {
+  const doc = await PlatformSetting.findOne({ key: 'ai_config' }).lean();
+  const stored = doc?.value && typeof doc.value === 'object' ? doc.value : {};
+  return stored.features?.clientAi === true;
 }
 
-async function buildContext(tenantId) {
-  const tenant = await Tenant.findById(tenantId).select('name country businessType').lean();
-  if (!tenant) throw ApiError.notFound('TENANT_NOT_FOUND', 'Tenant not found');
-
-  const from = new Date();
-  from.setDate(from.getDate() - 7);
-  from.setHours(0, 0, 0, 0);
-
-  const metrics = await DailyMetric.find({ tenantId, date: { $gte: from } }).lean();
-  const lowStock = await Product.find({
-    tenantId,
-    active: true,
-    $expr: { $lte: ['$stock', '$lowStockThreshold'] },
-  })
-    .select('name stock lowStockThreshold')
-    .limit(20)
-    .lean();
-
-  const todayStart = startOfDay(new Date());
-  const todaySales = await Sale.aggregate([
-    { $match: { tenantId, createdAt: { $gte: todayStart }, voided: { $ne: true } } },
-    { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } },
+async function buildBasePrompt() {
+  const [platformName, supportEmail] = await Promise.all([
+    PlatformSetting.getValue('platform_name', 'SmartPOS'),
+    PlatformSetting.getValue('support_email', null),
   ]);
 
-  return { tenant, metrics, lowStock, today: todaySales[0] || { total: 0, count: 0 } };
+  return [
+    `You are the AI assistant inside ${platformName}, a point-of-sale system for small businesses.`,
+    '',
+    'Your role:',
+    "- Answer questions about the current business's live data (sales, stock, customers, products)",
+    '- Be concise, direct, and factual — usually 2-4 sentences',
+    '- Use the LIVE DATA section below to answer. It is the source of truth.',
+    '- If a question cannot be answered from the data below, say so plainly.',
+    '- Never invent numbers, product names, or customer names.',
+    '- Prices are whole numbers — do not add decimals.',
+    "- Keep replies in the user's language.",
+    supportEmail ? `- Support contact: ${supportEmail}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
-function buildSystemPrompt(ctx) {
-  const { tenant, metrics, lowStock, today } = ctx;
+async function buildSystemPrompt(tenantId) {
+  const cacheKey = `${PROMPT_CACHE_KEY_PREFIX}${tenantId}`;
 
-  const last7 = metrics.reduce(
-    (acc, m) => {
-      acc.totalSales += m.totalSales || 0;
-      acc.totalTx += m.totalTransactions || 0;
-      return acc;
-    },
-    { totalSales: 0, totalTx: 0 }
-  );
-
-  const topAll = {};
-  for (const m of metrics) {
-    for (const p of m.topProducts || []) {
-      if (!topAll[p.name]) topAll[p.name] = { name: p.name, qty: 0, revenue: 0 };
-      topAll[p.name].qty += p.qty;
-      topAll[p.name].revenue += p.revenue;
+  let cached = null;
+  try {
+    const redis = getRedis();
+    if (redis) {
+      const raw = await redis.get(cacheKey);
+      if (raw) cached = raw;
     }
+  } catch {
+    // ignore cache errors
   }
-  const top = Object.values(topAll).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
 
-  const lines = [];
-  lines.push(`You are the AI business assistant for ${tenant.name}, a ${tenant.businessType} business in ${tenant.country}.`);
-  lines.push(`Today is ${new Date().toISOString().slice(0, 10)}.`);
-  lines.push('');
-  lines.push('Today:');
-  lines.push(`- Sales: ${today.total.toFixed(2)}`);
-  lines.push(`- Transactions: ${today.count}`);
-  lines.push('');
-  lines.push('Last 7 days:');
-  lines.push(`- Total sales: ${last7.totalSales.toFixed(2)}`);
-  lines.push(`- Transactions: ${last7.totalTx}`);
-  if (top.length) {
-    lines.push('- Top products:');
-    for (const p of top) lines.push(`  · ${p.name} — ${p.qty} sold, ${p.revenue.toFixed(2)} revenue`);
-  }
-  if (lowStock.length) {
-    lines.push('');
-    lines.push('Low stock:');
-    for (const p of lowStock) lines.push(`  · ${p.name} — ${p.stock} left`);
-  }
-  lines.push('');
-  lines.push('Answer questions about this business only. Use only the numbers above. If asked about something not in the data, say you do not have that information. Never invent numbers. Be concise.');
+  if (cached) return cached;
 
-  return lines.join('\n');
+  const base = await buildBasePrompt();
+  const ctx = await buildContext(tenantId).catch(() => null);
+  const ctxText = formatContextForPrompt(ctx);
+
+  const prompt = [base, '', ctxText].join('\n');
+
+  try {
+    const redis = getRedis();
+    if (redis) await redis.set(cacheKey, prompt, 'EX', PROMPT_TTL);
+  } catch {
+    // ignore
+  }
+
+  return prompt;
 }
 
 async function reply({ tenantId, userId, text }) {
-  if (!text || !text.trim()) throw ApiError.badRequest('EMPTY_MESSAGE', 'Message is required');
+  if (!text || !text.trim()) {
+    return { reply: 'Please type a question.', tokensUsed: 0 };
+  }
 
-  const ctx = await buildContext(tenantId);
-  const systemPrompt = buildSystemPrompt(ctx);
+  const enabled = await isClientAiEnabled();
+  if (!enabled) {
+    return { reply: 'The AI assistant is currently unavailable.', tokensUsed: 0 };
+  }
 
-  const { reply: answer, tokensUsed } = await chat(text, systemPrompt, {
-    tenantId,
-    type: 'chat',
-  });
+  try {
+    const systemPrompt = await buildSystemPrompt(tenantId);
 
-  await AiConversation.findOneAndUpdate(
-    { tenantId, userId },
-    {
-      $push: {
-        messages: {
-          $each: [
-            { role: 'user', content: text, ts: new Date() },
-            { role: 'assistant', content: answer, ts: new Date() },
-          ],
-        },
-      },
-    },
-    { upsert: true, new: true }
-  );
+    let conv = await AiConversation.findOne({ tenantId, userId });
+    if (!conv) {
+      conv = await AiConversation.create({ tenantId, userId, messages: [] });
+    }
 
-  return { reply: answer, tokensUsed };
+    // Build a compact context string from history
+    const recent = (conv.messages || []).slice(-10);
+    const historyText = recent.length
+      ? recent.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n')
+      : '';
+
+    const combinedMessage = historyText
+      ? `${historyText}\nUser: ${text.trim()}`
+      : text.trim();
+
+    const { reply: answer, tokensUsed } = await chat(combinedMessage, systemPrompt, {
+      type: 'client_chat',
+    });
+
+    conv.messages.push(
+      { role: 'user', content: text.trim(), ts: new Date() },
+      { role: 'assistant', content: answer, ts: new Date() }
+    );
+
+    if (conv.messages.length > 100) {
+      conv.messages = conv.messages.slice(-100);
+    }
+
+    await conv.save();
+
+    return { reply: answer, tokensUsed };
+  } catch (err) {
+    logger.error({ err: err.message, tenantId, userId }, 'chatService.reply failed');
+    return {
+      reply: 'Sorry, I could not process that right now. Please try again.',
+      tokensUsed: 0,
+    };
+  }
 }
 
 async function history(tenantId, userId, { limit = 50 } = {}) {
-  const doc = await AiConversation.findOne({ tenantId, userId }).lean();
-  if (!doc) return [];
-  return (doc.messages || []).slice(-limit);
+  const conv = await AiConversation.findOne({ tenantId, userId }).lean();
+  if (!conv) return [];
+  return (conv.messages || []).slice(-limit);
 }
 
 async function clear(tenantId, userId) {
-  await AiConversation.deleteOne({ tenantId, userId });
-  return { cleared: true };
+  await AiConversation.findOneAndUpdate(
+    { tenantId, userId },
+    { $set: { messages: [] } },
+    { upsert: true }
+  );
 }
 
-module.exports = { reply, history, clear, buildContext, buildSystemPrompt };
+module.exports = { reply, history, clear };

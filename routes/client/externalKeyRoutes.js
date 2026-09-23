@@ -1,15 +1,15 @@
 const { Router } = require('express');
-const c = require('../../controllers/client/insightController');
+const c = require('../../controllers/client/externalKeyController');
 const { roles } = require('../../middleware/client/roles');
 const { requireActive } = require('../../middleware/client/statusGuard');
 
 const router = Router();
 
 router.use(requireActive);
+router.use(roles('owner'));
 
-router.get('/today', c.today);
-router.get('/stock-alerts', c.stockAlerts);
-
-router.get('/range', roles('owner', 'manager'), c.range);
+router.get('/', c.getKey);
+router.post('/', c.createKey);
+router.delete('/', c.revokeKey);
 
 module.exports = router;

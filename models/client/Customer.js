@@ -8,7 +8,10 @@ const schema = new mongoose.Schema(
     email: { type: String, lowercase: true, trim: true },
     address: String,
     notes: String,
+    loyaltyCardNumber: { type: String, trim: true },
     totalSpent: { type: Number, default: 0 },
+    loyaltyPoints: { type: Number, default: 0 },
+    visitCount: { type: Number, default: 0 },
     lastPurchaseAt: Date,
     active: { type: Boolean, default: true },
   },
@@ -18,6 +21,7 @@ const schema = new mongoose.Schema(
 schema.index({ tenantId: 1, phone: 1 });
 schema.index({ tenantId: 1, email: 1 });
 schema.index({ tenantId: 1, name: 1 });
+schema.index({ tenantId: 1, loyaltyCardNumber: 1 }, { sparse: true });
 
 schema.set('toJSON', {
   virtuals: true,

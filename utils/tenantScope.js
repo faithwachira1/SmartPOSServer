@@ -1,10 +1,17 @@
+const mongoose = require('mongoose');
 const { ApiError } = require('./apiError');
 
 function tenantFilter(req, extra = {}) {
-  const tenantId = req.user?.tenantId;
-  if (!tenantId) {
+  const raw = req.user?.tenantId;
+  if (!raw) {
     throw ApiError.forbidden('NO_TENANT', 'Tenant context missing');
   }
+
+  const tenantId =
+    raw instanceof mongoose.Types.ObjectId
+      ? raw
+      : new mongoose.Types.ObjectId(String(raw));
+
   return { tenantId, ...extra };
 }
 

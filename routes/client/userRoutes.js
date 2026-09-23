@@ -12,7 +12,7 @@ router.get('/', c.list);
 router.post('/invite', c.invite);
 router.get('/:id', c.get);
 router.patch('/:id/role', c.updateRole);
-router.post('/:id/deactivate', c.deactivate);
+router.delete('/:id', c.remove);
 router.post('/:id/reset-password', c.resetPassword);
 
 module.exports = router;

@@ -15,6 +15,20 @@ function tempPassword() {
   return crypto.randomBytes(6).toString('base64url').slice(0, 10);
 }
 
+function shapeUser(u) {
+  return {
+    id: u._id.toString(),
+    fullName: u.fullName,
+    email: u.email,
+    phone: u.phone || null,
+    role: u.role,
+    status: u.status,
+    mustChangePassword: u.mustChangePassword || false,
+    lastLoginAt: u.lastLoginAt || null,
+    createdAt: u.createdAt,
+  };
+}
+
 async function checkRoleLimit(tenantId, role) {
   if (role === 'owner') return planService.checkOwnerLimit(tenantId, User);
   if (role === 'manager') return planService.checkManagerLimit(tenantId, User);
@@ -32,14 +46,14 @@ const list = asyncHandler(async (req, res) => {
     User.countDocuments(filter),
   ]);
 
-  return paginated(res, items, page, limit, total);
+  return paginated(res, items.map(shapeUser), page, limit, total);
 });
 
 const get = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'userId');
   const user = await User.findOne(tenantFilter(req, { _id: req.params.id })).lean();
   if (!user) throw ApiError.notFound('USER_NOT_FOUND', 'User not found');
-  return ok(res, user);
+  return ok(res, shapeUser(user));
 });
 
 const invite = asyncHandler(async (req, res) => {
@@ -83,13 +97,7 @@ const invite = asyncHandler(async (req, res) => {
     })
     .catch(() => {});
 
-  return created(res, {
-    id: user._id,
-    email: user.email,
-    fullName: user.fullName,
-    role: user.role,
-    status: user.status,
-  });
+  return created(res, shapeUser(user));
 });
 
 const updateRole = asyncHandler(async (req, res) => {
@@ -117,9 +125,7 @@ const updateRole = asyncHandler(async (req, res) => {
     }
   }
 
-  if (role === 'owner' || role === 'manager' || role === 'cashier') {
-    await checkRoleLimit(req.tenantId, role);
-  }
+  await checkRoleLimit(req.tenantId, role);
 
   user.role = role;
   await user.save();
@@ -137,11 +143,15 @@ const updateRole = asyncHandler(async (req, res) => {
   return ok(res, { id: user._id, role: user.role });
 });
 
-const deactivate = asyncHandler(async (req, res) => {
+const remove = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'userId');
 
   const user = await User.findOne(tenantFilter(req, { _id: req.params.id }));
   if (!user) throw ApiError.notFound('USER_NOT_FOUND', 'User not found');
+
+  if (user._id.toString() === req.user.id) {
+    throw ApiError.badRequest('CANNOT_DELETE_SELF', 'You cannot delete your own account');
+  }
 
   if (user.role === 'owner') {
     const ownerCount = await User.countDocuments({
@@ -150,22 +160,13 @@ const deactivate = asyncHandler(async (req, res) => {
       status: 'active',
     });
     if (ownerCount <= 1) {
-      throw ApiError.badRequest('LAST_OWNER', 'Cannot deactivate the last owner');
+      throw ApiError.badRequest('LAST_OWNER', 'Cannot delete the last owner');
     }
   }
 
-  user.status = 'suspended';
-  await user.save();
+  await User.deleteOne({ _id: user._id });
 
-  const tenant = await Tenant.findById(req.tenantId).lean();
-  emailService
-    .sendStaffDeactivatedEmail(user.email, {
-      fullName: user.fullName,
-      businessName: tenant?.name || 'SmartPOS',
-    })
-    .catch(() => {});
-
-  return ok(res, { deactivated: true });
+  return ok(res, { deleted: true, id: user._id.toString() });
 });
 
 const resetPassword = asyncHandler(async (req, res) => {
@@ -196,4 +197,4 @@ const resetPassword = asyncHandler(async (req, res) => {
   return ok(res, { reset: true });
 });
 
-module.exports = { list, get, invite, updateRole, deactivate, resetPassword };
+module.exports = { list, get, invite, updateRole, remove, resetPassword };

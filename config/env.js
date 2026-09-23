@@ -34,6 +34,11 @@ const optional = [
   'MPESA_PASSKEY',
   'MPESA_CALLBACK_URL',
   'DISABLE_SCHEDULERS',
+  'RATE_LIMIT_ENABLED',
+  'RATE_LIMIT_WINDOW_MS',
+  'RATE_LIMIT_MAX',
+  'RATE_LIMIT_AUTH_MAX',
+  'M_PESA_ENCRYPTION_KEY',
 ];
 
 const missing = required.filter((k) => !process.env[k]);
@@ -44,7 +49,9 @@ if (missing.length) {
 
 const missingOptional = optional.filter((k) => !process.env[k]);
 if (missingOptional.length) {
-  console.warn(`Optional env vars not set (features disabled):\n  ${missingOptional.join('\n  ')}`);
+  console.warn(
+    `Optional env vars not set (features disabled):\n  ${missingOptional.join('\n  ')}`
+  );
 }
 
 if (process.env.NODE_ENV === 'production') {
@@ -54,6 +61,30 @@ if (process.env.NODE_ENV === 'production') {
   if (weak.length) {
     console.error(`Weak secrets in production: ${weak.join(', ')}`);
     process.exit(1);
+  }
+}
+
+if (process.env.NODE_ENV === 'production' && !process.env.M_PESA_ENCRYPTION_KEY) {
+  console.error('M_PESA_ENCRYPTION_KEY is required in production');
+  process.exit(1);
+}
+if (process.env.M_PESA_ENCRYPTION_KEY) {
+  const keyBuf = Buffer.from(process.env.M_PESA_ENCRYPTION_KEY, 'hex');
+  if (keyBuf.length !== 32) {
+    console.error('M_PESA_ENCRYPTION_KEY must be 64 hex chars (32 bytes)');
+    process.exit(1);
+  }
+} else {
+  console.warn(
+    'M_PESA_ENCRYPTION_KEY not set — tenant M-Pesa STK checkout will be disabled'
+  );
+}
+
+if (process.env.MPESA_CALLBACK_URL) {
+  if (!/^https:\/\//i.test(process.env.MPESA_CALLBACK_URL)) {
+    console.warn(
+      'MPESA_CALLBACK_URL should be https:// in production (Safaricom rejects http and localhost)'
+    );
   }
 }
 
@@ -106,6 +137,7 @@ const env = Object.freeze({
     passkey: process.env.MPESA_PASSKEY || '',
     callbackUrl: process.env.MPESA_CALLBACK_URL || '',
   },
+  mpesaEncryptionKey: process.env.M_PESA_ENCRYPTION_KEY || '',
   cors: {
     origins: process.env.CORS_ORIGINS
       .split(',')
@@ -115,6 +147,13 @@ const env = Object.freeze({
   appUrl: process.env.APP_URL,
   adminUrl: process.env.ADMIN_URL,
   disableSchedulers: process.env.DISABLE_SCHEDULERS === 'true',
+
+  rateLimit: {
+    enabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_MAX) || 300,
+    authMax: Number(process.env.RATE_LIMIT_AUTH_MAX) || 10,
+  },
 });
 
 module.exports = { env };

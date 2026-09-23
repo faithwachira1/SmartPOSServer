@@ -12,7 +12,22 @@ const PendingActivation = require('../../models/admin/PendingActivation');
 const PaymentMethod = require('../../models/admin/PaymentMethod');
 const Invoice = require('../../models/client/Invoice');
 const AdminAction = require('../../models/admin/AdminAction');
+const Plan = require('../../models/admin/Plan');
+const Subscription = require('../../models/admin/Subscription');
 const emailService = require('../../services/emailService');
+
+function computePeriodEnd(plan, from) {
+  const interval = plan?.price?.interval || 'month';
+  const base = new Date(from);
+
+  if (interval === 'year') {
+    return new Date(base.getTime() + 365 * 24 * 60 * 60 * 1000);
+  }
+  if (interval === 'once') {
+    return null;
+  }
+  return new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
+}
 
 async function seedCashPayment(tenantId) {
   const cash = await PaymentMethod.findOne({ code: 'cash' }).lean();
@@ -118,9 +133,19 @@ const approve = asyncHandler(async (req, res) => {
   const tenant = await Tenant.findById(pending.tenantId);
   if (!tenant) throw ApiError.notFound('TENANT_NOT_FOUND', 'Tenant not found');
 
+  const plan = await Plan.findOne({ code: tenant.planId }).lean();
+
+  const now = new Date();
+  const periodEnd = computePeriodEnd(plan, now);
+  const interval = plan?.price?.interval || 'month';
+  const currency = plan?.price?.currency || 'KES';
+  const amountMinor = Math.round((plan?.price?.amount || 0) * 100);
+
   tenant.status = 'active';
-  tenant.approvedAt = new Date();
+  tenant.approvedAt = now;
   tenant.approvedBy = req.admin.id;
+  tenant.registeredAt = now;
+  tenant.expiresAt = periodEnd;
   await tenant.save();
 
   await User.updateMany(
@@ -130,9 +155,38 @@ const approve = asyncHandler(async (req, res) => {
 
   await seedCashPayment(tenant._id);
 
+  // Create or update subscription record
+  const existingSub = await Subscription.findOne({ tenantId: tenant._id }).sort({
+    createdAt: -1,
+  });
+
+  if (!existingSub) {
+    await Subscription.create({
+      tenantId: tenant._id,
+      plan: tenant.planId,
+      cycle: interval,
+      currency,
+      amountMinor,
+      status: interval === 'once' ? 'perpetual' : 'active',
+      periodStart: now,
+      periodEnd,
+      autoRenew: interval !== 'once',
+    });
+  } else {
+    existingSub.plan = tenant.planId;
+    existingSub.cycle = interval;
+    existingSub.currency = currency;
+    existingSub.amountMinor = amountMinor;
+    existingSub.status = interval === 'once' ? 'perpetual' : 'active';
+    existingSub.periodStart = now;
+    existingSub.periodEnd = periodEnd;
+    existingSub.autoRenew = interval !== 'once';
+    await existingSub.save();
+  }
+
   pending.status = 'approved';
   pending.decision = 'approved';
-  pending.reviewedAt = new Date();
+  pending.reviewedAt = now;
   pending.reviewedBy = req.admin.id;
   pending.notes = req.body.notes || pending.notes;
   await pending.save();
