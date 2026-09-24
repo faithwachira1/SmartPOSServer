@@ -2,19 +2,32 @@ const Invoice = require('../models/client/Invoice');
 const paymentInstructionsService = require('./paymentInstructionsService');
 const { ApiError } = require('../utils/apiError');
 const { logger } = require('../utils/logger');
+const { generateInvoiceNumber } = require('../utils/invoiceNumber');
 
 const DUE_HOURS = 3;
-
-async function nextInvoiceNumber(tenantId) {
-  const count = await Invoice.countDocuments({ tenantId });
-  const year = new Date().getFullYear();
-  return `INV-${year}-${String(count + 1).padStart(4, '0')}`;
-}
 
 function intervalLabel(interval) {
   if (interval === 'once') return 'One-time';
   if (interval === 'year') return 'Annual';
   return 'Monthly';
+}
+
+async function createInvoiceWithRetry(data, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await Invoice.create({
+        ...data,
+        invoiceNumber: generateInvoiceNumber(),
+      });
+    } catch (err) {
+      if (err.code !== 11000) throw err;
+      logger.warn({ attempt: i + 1 }, 'invoice number collision, retrying');
+    }
+  }
+  throw ApiError.internal(
+    'INVOICE_NUMBER_COLLISION',
+    'Could not generate a unique invoice number'
+  );
 }
 
 async function generateRegistrationInvoice({ tenantId, owner, tenant, plan }) {
@@ -26,7 +39,6 @@ async function generateRegistrationInvoice({ tenantId, owner, tenant, plan }) {
   const planName = plan?.name || 'Free';
   const label = intervalLabel(price.interval);
 
-  const invoiceNumber = await nextInvoiceNumber(tenantId);
   const issuedAt = new Date();
   const dueDate = new Date(issuedAt.getTime() + DUE_HOURS * 60 * 60 * 1000);
 
@@ -44,13 +56,15 @@ async function generateRegistrationInvoice({ tenantId, owner, tenant, plan }) {
   const subtotal = price.amount;
   const total = subtotal;
 
+  const invoiceNumber = generateInvoiceNumber();
+
   const instructions = await paymentInstructionsService.getPaymentInstructions({
     amount: total,
     currency: price.currency,
     invoiceNumber,
   });
 
-  const invoice = await Invoice.create({
+  const invoice = await createInvoiceWithRetry({
     tenantId,
     invoiceNumber,
     customerId: null,
@@ -80,7 +94,7 @@ async function generateRegistrationInvoice({ tenantId, owner, tenant, plan }) {
   logger.info(
     {
       tenantId,
-      invoiceNumber,
+      invoiceNumber: invoice.invoiceNumber,
       total,
       dueDate,
       dueHours: DUE_HOURS,
@@ -93,4 +107,4 @@ async function generateRegistrationInvoice({ tenantId, owner, tenant, plan }) {
   return { invoice, instructions };
 }
 
-module.exports = { generateRegistrationInvoice, nextInvoiceNumber, DUE_HOURS };
+module.exports = { generateRegistrationInvoice, DUE_HOURS };
