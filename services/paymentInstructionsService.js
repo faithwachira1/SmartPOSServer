@@ -22,8 +22,52 @@ function sanitizeConfig(code, config = {}) {
   return out;
 }
 
+/**
+ * Replace any `{placeholder}` in a string with the matching variable.
+ * Supports: sale_number, invoice_number, invoiceNumber, amount, currency, invoice
+ * If a placeholder isn't recognized, it is left untouched so the admin can see it.
+ */
+function substitute(template, vars) {
+  if (typeof template !== 'string') return template;
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(vars, key)) {
+      return String(vars[key]);
+    }
+    return match;
+  });
+}
+
+function buildVars({ amount, currency, invoiceNumber }) {
+  const amountStr = Number(amount).toLocaleString('en-KE');
+  return {
+    sale_number: invoiceNumber,
+    invoice_number: invoiceNumber,
+    invoiceNumber: invoiceNumber,
+    invoice: invoiceNumber,
+    amount: amountStr,
+    amountRaw: amount,
+    currency,
+  };
+}
+
+function substituteSteps(steps, vars) {
+  if (!Array.isArray(steps)) return steps;
+  return steps.map((s) => substitute(s, vars));
+}
+
+function substituteRecipient(recipient, vars) {
+  if (!recipient || typeof recipient !== 'object') return recipient;
+  const out = {};
+  for (const [k, v] of Object.entries(recipient)) {
+    out[k] = typeof v === 'string' ? substitute(v, vars) : v;
+  }
+  return out;
+}
+
 function buildInstructions(method, { amount, currency, invoiceNumber }) {
   const c = method.config || {};
+  const vars = buildVars({ amount, currency, invoiceNumber });
+  const amountStr = vars.amount;
 
   switch (method.code) {
     case 'mpesa_stk':
@@ -31,7 +75,7 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
         code: 'mpesa_stk',
         mode: 'auto',
         title: 'M-Pesa STK Push',
-        description: 'Enter your M-Pesa phone number and we\'ll send a payment prompt to your phone.',
+        description: "Enter your M-Pesa phone number and we'll send a payment prompt to your phone.",
         action: {
           type: 'stk',
           label: 'Send STK to my phone',
@@ -48,7 +92,7 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
         steps: [
           'Visit our office during business hours',
           `Mention invoice ${invoiceNumber}`,
-          `Pay ${currency} ${amount}`,
+          `Pay ${currency} ${amountStr}`,
           'Request a receipt for your records',
         ],
       };
@@ -63,10 +107,10 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
           'Go to M-Pesa menu on your phone',
           'Select "Send Money"',
           `Enter number: ${c.phone || '[not configured]'}`,
-          `Enter amount: ${currency} ${amount}`,
-          `Enter your M-Pesa PIN and confirm`,
+          `Enter amount: ${currency} ${amountStr}`,
+          'Enter your M-Pesa PIN and confirm',
           `Enter "${invoiceNumber}" as the reason if prompted`,
-          'Keep the M-Pesa confirmation code — you\'ll need it to verify',
+          "Keep the M-Pesa confirmation code — you'll need it to verify",
         ],
         recipient: {
           phone: c.phone || null,
@@ -85,9 +129,9 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
           'Select "Lipa na M-Pesa"',
           'Select "Buy Goods and Services"',
           `Enter till number: ${c.tillNumber || '[not configured]'}`,
-          `Enter amount: ${currency} ${amount}`,
+          `Enter amount: ${currency} ${amountStr}`,
           'Enter your M-Pesa PIN and confirm',
-          'Keep the M-Pesa confirmation code — you\'ll need it to verify',
+          "Keep the M-Pesa confirmation code — you'll need it to verify",
         ],
         recipient: {
           tillNumber: c.tillNumber || null,
@@ -95,7 +139,8 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
         },
       };
 
-    case 'mpesa_paybill':
+    case 'mpesa_paybill': {
+      const accountNumber = substitute(c.accountNumber || invoiceNumber, vars);
       return {
         code: 'mpesa_paybill',
         mode: 'manual',
@@ -106,17 +151,18 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
           'Select "Lipa na M-Pesa"',
           'Select "Pay Bill"',
           `Enter business number: ${c.paybillNumber || '[not configured]'}`,
-          `Enter account number: ${c.accountNumber === '{invoice_number}' ? invoiceNumber : (c.accountNumber || invoiceNumber)}`,
-          `Enter amount: ${currency} ${amount}`,
+          `Enter account number: ${accountNumber}`,
+          `Enter amount: ${currency} ${amountStr}`,
           'Enter your M-Pesa PIN and confirm',
-          'Keep the M-Pesa confirmation code — you\'ll need it to verify',
+          "Keep the M-Pesa confirmation code — you'll need it to verify",
         ],
         recipient: {
           paybillNumber: c.paybillNumber || null,
-          accountNumber: c.accountNumber === '{invoice_number}' ? invoiceNumber : (c.accountNumber || invoiceNumber),
+          accountNumber,
           name: c.name || null,
         },
       };
+    }
 
     case 'bank':
       return {
@@ -130,7 +176,7 @@ function buildInstructions(method, { amount, currency, invoiceNumber }) {
           `Account number: ${c.accountNumber || '[not configured]'}`,
           c.branch ? `Branch: ${c.branch}` : null,
           c.swift ? `SWIFT: ${c.swift}` : null,
-          `Amount: ${currency} ${amount}`,
+          `Amount: ${currency} ${amountStr}`,
           `Reference: ${invoiceNumber}`,
           'Send us a screenshot or the bank reference once paid',
         ].filter(Boolean),
