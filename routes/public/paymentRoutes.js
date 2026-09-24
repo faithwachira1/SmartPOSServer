@@ -5,5 +5,6 @@ const router = Router();
 
 router.get('/methods', c.getMethods);
 router.post('/stk/invoice', c.sendStkForInvoice);
+router.get('/stk/status/:checkoutRequestId', c.checkStkStatus);
 
 module.exports = router;

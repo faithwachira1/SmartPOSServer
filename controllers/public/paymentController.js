@@ -106,4 +106,37 @@ const sendStkForInvoice = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { getMethods, sendStkForInvoice };
+const checkStkStatus = asyncHandler(async (req, res) => {
+  const { checkoutRequestId } = req.params;
+
+  if (!checkoutRequestId) {
+    throw ApiError.badRequest('MISSING_FIELDS', 'checkoutRequestId required');
+  }
+
+  const payment = await Payment.findOne({
+    providerRef: checkoutRequestId,
+    purpose: 'invoice',
+  }).lean();
+
+  if (!payment) {
+    throw ApiError.notFound('PAYMENT_NOT_FOUND', 'Payment not found');
+  }
+
+  const invoice = payment.invoiceId
+    ? await Invoice.findById(payment.invoiceId)
+        .select('invoiceNumber status amountPaid amountDue currency')
+        .lean()
+    : null;
+
+  return ok(res, {
+    status: payment.status,
+    invoiceNumber: invoice?.invoiceNumber || null,
+    invoiceStatus: invoice?.status || null,
+    amountPaid: invoice?.amountPaid || 0,
+    amountDue: invoice?.amountDue || 0,
+    currency: invoice?.currency || payment.currency,
+    receipt: payment.status === 'success' ? payment.providerRef : null,
+  });
+});
+
+module.exports = { getMethods, sendStkForInvoice, checkStkStatus };
