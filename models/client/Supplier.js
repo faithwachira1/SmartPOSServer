@@ -12,12 +12,15 @@ const schema = new mongoose.Schema(
     totalSpent: { type: Number, default: 0 },
     lastOrderAt: Date,
     active: { type: Boolean, default: true },
+
+    deleted: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }
 );
 
 schema.index({ tenantId: 1, name: 1 });
 schema.index({ tenantId: 1, active: 1 });
+schema.index({ tenantId: 1, deleted: 1, updatedAt: -1 });
 
 schema.set('toJSON', {
   virtuals: true,

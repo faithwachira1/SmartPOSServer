@@ -41,6 +41,7 @@ function shapeHeld(h) {
 const list = asyncHandler(async (req, res) => {
   const filter = tenantFilter(req);
   filter.expiresAt = { $gt: new Date() };
+  filter.deleted = { $ne: true };
 
   const items = await HeldSale.find(filter)
     .sort({ createdAt: -1 })
@@ -53,7 +54,7 @@ const list = asyncHandler(async (req, res) => {
 const get = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'heldSaleId');
   const held = await HeldSale.findOne(
-    tenantFilter(req, { _id: req.params.id })
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } })
   ).lean();
   if (!held) throw ApiError.notFound('HELD_SALE_NOT_FOUND', 'Held sale not found');
   if (held.expiresAt <= new Date()) {
@@ -84,7 +85,7 @@ const create = asyncHandler(async (req, res) => {
     if (!productId) continue;
 
     const product = await Product.findOne(
-      tenantFilter(req, { _id: productId })
+      tenantFilter(req, { _id: productId, deleted: { $ne: true } })
     ).lean();
     if (!product) continue;
 
@@ -140,8 +141,10 @@ const create = asyncHandler(async (req, res) => {
 
 const remove = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'heldSaleId');
-  const held = await HeldSale.findOneAndDelete(
-    tenantFilter(req, { _id: req.params.id })
+  const held = await HeldSale.findOneAndUpdate(
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } }),
+    { $set: { deleted: true } },
+    { new: true }
   ).lean();
   if (!held) throw ApiError.notFound('HELD_SALE_NOT_FOUND', 'Held sale not found');
   return ok(res, { deleted: true, id: held._id.toString() });

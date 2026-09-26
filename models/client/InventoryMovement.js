@@ -13,6 +13,11 @@ const schema = new mongoose.Schema(
     refId: mongoose.Schema.Types.ObjectId,
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     balanceAfter: Number,
+
+    localId: { type: String, sparse: true, index: true },
+    deviceId: { type: String, sparse: true },
+    syncedAt: { type: Date, default: null },
+    source: { type: String, enum: ['live', 'offline'], default: 'live' },
   },
   { timestamps: true }
 );
@@ -20,6 +25,7 @@ const schema = new mongoose.Schema(
 schema.index({ tenantId: 1, productId: 1, createdAt: -1 });
 schema.index({ tenantId: 1, type: 1 });
 schema.index({ tenantId: 1, refType: 1, refId: 1 });
+schema.index({ tenantId: 1, localId: 1 }, { sparse: true });
 
 schema.set('toJSON', {
   virtuals: true,

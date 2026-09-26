@@ -46,6 +46,7 @@ function normalizePhone(input) {
 const list = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePagination(req.query);
   const filter = tenantFilter(req);
+  filter.deleted = { $ne: true };
 
   if (req.query.search) {
     const s = String(req.query.search).trim();
@@ -67,7 +68,9 @@ const list = asyncHandler(async (req, res) => {
 
 const get = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'customerId');
-  const customer = await Customer.findOne(tenantFilter(req, { _id: req.params.id })).lean();
+  const customer = await Customer.findOne(
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } })
+  ).lean();
   if (!customer) throw ApiError.notFound('CUSTOMER_NOT_FOUND', 'Customer not found');
   return ok(res, shapeCustomer(customer));
 });
@@ -85,6 +88,7 @@ const create = asyncHandler(async (req, res) => {
       tenantId: req.tenantId,
       phone,
       active: true,
+      deleted: { $ne: true },
     }).lean();
 
     if (existing) {
@@ -143,6 +147,7 @@ const update = asyncHandler(async (req, res) => {
       tenantId: req.tenantId,
       phone: patch.phone,
       active: true,
+      deleted: { $ne: true },
       _id: { $ne: req.params.id },
     }).lean();
 
@@ -170,7 +175,7 @@ const update = asyncHandler(async (req, res) => {
   }
 
   const customer = await Customer.findOneAndUpdate(
-    tenantFilter(req, { _id: req.params.id }),
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } }),
     patch,
     { new: true }
   ).lean();
@@ -182,7 +187,9 @@ const update = asyncHandler(async (req, res) => {
 const remove = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'customerId');
 
-  const customer = await Customer.findOne(tenantFilter(req, { _id: req.params.id }));
+  const customer = await Customer.findOne(
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } })
+  );
   if (!customer) throw ApiError.notFound('CUSTOMER_NOT_FOUND', 'Customer not found');
 
   const salesCount = await Sale.countDocuments({
@@ -198,7 +205,9 @@ const remove = asyncHandler(async (req, res) => {
     );
   }
 
-  await Customer.deleteOne({ _id: customer._id });
+  customer.deleted = true;
+  customer.active = false;
+  await customer.save();
 
   return ok(res, { deleted: true, id: customer._id.toString() });
 });

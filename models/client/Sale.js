@@ -38,6 +38,12 @@ const schema = new mongoose.Schema(
     voidedAt: Date,
     receiptUrl: String,
     receiptPublicId: String,
+
+    localId: { type: String, sparse: true, index: true },
+    deviceId: { type: String, sparse: true },
+    syncedAt: { type: Date, default: null },
+    source: { type: String, enum: ['live', 'offline'], default: 'live' },
+    stockWarnings: { type: [String], default: [] },
   },
   { timestamps: true }
 );
@@ -46,6 +52,7 @@ schema.index({ tenantId: 1, saleNumber: 1 }, { unique: true });
 schema.index({ tenantId: 1, createdAt: -1 });
 schema.index({ tenantId: 1, cashierId: 1 });
 schema.index({ tenantId: 1, customerId: 1 });
+schema.index({ tenantId: 1, localId: 1 }, { sparse: true });
 
 schema.set('toJSON', {
   virtuals: true,

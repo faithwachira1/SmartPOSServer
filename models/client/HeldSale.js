@@ -29,6 +29,12 @@ const schema = new mongoose.Schema(
     label: { type: String, default: null },
     note: { type: String, default: null },
     expiresAt: { type: Date, required: true },
+
+    localId: { type: String, sparse: true, index: true },
+    deviceId: { type: String, sparse: true },
+    syncedAt: { type: Date, default: null },
+    source: { type: String, enum: ['live', 'offline'], default: 'live' },
+    deleted: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -36,6 +42,7 @@ const schema = new mongoose.Schema(
 schema.index({ tenantId: 1, createdAt: -1 });
 schema.index({ tenantId: 1, cashierId: 1 });
 schema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+schema.index({ tenantId: 1, localId: 1 }, { sparse: true });
 
 schema.set('toJSON', {
   virtuals: true,

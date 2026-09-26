@@ -5,12 +5,15 @@ const { ok, created } = require('../../utils/apiResponse');
 const { ApiError } = require('../../utils/apiError');
 
 const list = asyncHandler(async (req, res) => {
-  const items = await Category.find({ tenantId: req.tenantId })
+  const items = await Category.find({
+    tenantId: req.tenantId,
+    deleted: { $ne: true },
+  })
     .sort({ position: 1, name: 1 })
     .lean();
 
   const counts = await Product.aggregate([
-    { $match: { tenantId: req.tenantId, active: true } },
+    { $match: { tenantId: req.tenantId, active: true, deleted: { $ne: true } } },
     { $group: { _id: '$category', count: { $sum: 1 } } },
   ]);
   const countMap = new Map(counts.map((c) => [String(c._id), c.count]));
@@ -30,6 +33,7 @@ const getOne = asyncHandler(async (req, res) => {
   const category = await Category.findOne({
     _id: req.params.id,
     tenantId: req.tenantId,
+    deleted: { $ne: true },
   }).lean();
   if (!category) throw ApiError.notFound('CATEGORY_NOT_FOUND', 'Category not found');
   return ok(res, {
@@ -50,10 +54,14 @@ const create = asyncHandler(async (req, res) => {
   const existing = await Category.findOne({
     tenantId: req.tenantId,
     name: trimmed,
+    deleted: { $ne: true },
   });
   if (existing) throw ApiError.conflict('CATEGORY_EXISTS', 'Category already exists');
 
-  const count = await Category.countDocuments({ tenantId: req.tenantId });
+  const count = await Category.countDocuments({
+    tenantId: req.tenantId,
+    deleted: { $ne: true },
+  });
 
   const category = await Category.create({
     tenantId: req.tenantId,
@@ -74,6 +82,7 @@ const update = asyncHandler(async (req, res) => {
   const category = await Category.findOne({
     _id: req.params.id,
     tenantId: req.tenantId,
+    deleted: { $ne: true },
   });
   if (!category) throw ApiError.notFound('CATEGORY_NOT_FOUND', 'Category not found');
 
@@ -85,13 +94,13 @@ const update = asyncHandler(async (req, res) => {
     const dup = await Category.findOne({
       tenantId: req.tenantId,
       name: trimmed,
+      deleted: { $ne: true },
       _id: { $ne: category._id },
     });
     if (dup) throw ApiError.conflict('CATEGORY_EXISTS', 'Category name already in use');
 
     category.name = trimmed;
 
-    // Rename on all products using the old name
     await Product.updateMany(
       { tenantId: req.tenantId, category: oldName },
       { $set: { category: trimmed } }
@@ -113,6 +122,7 @@ const remove = asyncHandler(async (req, res) => {
   const category = await Category.findOne({
     _id: req.params.id,
     tenantId: req.tenantId,
+    deleted: { $ne: true },
   });
   if (!category) throw ApiError.notFound('CATEGORY_NOT_FOUND', 'Category not found');
 
@@ -120,6 +130,7 @@ const remove = asyncHandler(async (req, res) => {
     tenantId: req.tenantId,
     category: category.name,
     active: true,
+    deleted: { $ne: true },
   });
   if (inUse > 0) {
     throw ApiError.badRequest(
@@ -128,7 +139,8 @@ const remove = asyncHandler(async (req, res) => {
     );
   }
 
-  await Category.deleteOne({ _id: category._id });
+  category.deleted = true;
+  await category.save();
   return ok(res, { deleted: true });
 });
 

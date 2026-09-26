@@ -4,7 +4,7 @@ const { ApiError } = require('../utils/apiError');
 const { logger } = require('../utils/logger');
 
 async function list(tenantId, { page = 1, limit = 20, search, active } = {}) {
-  const filter = { tenantId };
+  const filter = { tenantId, deleted: { $ne: true } };
   if (active !== undefined) filter.active = active;
   if (search) {
     filter.$or = [
@@ -26,7 +26,11 @@ async function list(tenantId, { page = 1, limit = 20, search, active } = {}) {
 }
 
 async function getById(tenantId, id) {
-  const supplier = await Supplier.findOne({ _id: id, tenantId }).lean();
+  const supplier = await Supplier.findOne({
+    _id: id,
+    tenantId,
+    deleted: { $ne: true },
+  }).lean();
   if (!supplier) throw ApiError.notFound('SUPPLIER_NOT_FOUND', 'Supplier not found');
   return supplier;
 }
@@ -60,7 +64,7 @@ async function update(tenantId, id, payload) {
   if (patch.email) patch.email = patch.email.toLowerCase();
 
   const supplier = await Supplier.findOneAndUpdate(
-    { _id: id, tenantId },
+    { _id: id, tenantId, deleted: { $ne: true } },
     patch,
     { new: true }
   ).lean();
@@ -70,13 +74,18 @@ async function update(tenantId, id, payload) {
 }
 
 async function remove(tenantId, id) {
-  const supplier = await Supplier.findOne({ _id: id, tenantId });
+  const supplier = await Supplier.findOne({
+    _id: id,
+    tenantId,
+    deleted: { $ne: true },
+  });
   if (!supplier) throw ApiError.notFound('SUPPLIER_NOT_FOUND', 'Supplier not found');
 
   const activeOrders = await PurchaseOrder.countDocuments({
     tenantId,
     supplierId: id,
     status: { $in: ['draft', 'sent', 'partial'] },
+    deleted: { $ne: true },
   });
 
   if (activeOrders > 0) {
@@ -87,6 +96,7 @@ async function remove(tenantId, id) {
   }
 
   supplier.active = false;
+  supplier.deleted = true;
   await supplier.save();
 
   logger.info({ tenantId, supplierId: id }, 'supplier deactivated');
@@ -95,18 +105,22 @@ async function remove(tenantId, id) {
 }
 
 async function orders(tenantId, supplierId, { page = 1, limit = 20 } = {}) {
-  const supplier = await Supplier.findOne({ _id: supplierId, tenantId }).lean();
+  const supplier = await Supplier.findOne({
+    _id: supplierId,
+    tenantId,
+    deleted: { $ne: true },
+  }).lean();
   if (!supplier) throw ApiError.notFound('SUPPLIER_NOT_FOUND', 'Supplier not found');
 
   const skip = (page - 1) * limit;
 
   const [items, total] = await Promise.all([
-    PurchaseOrder.find({ tenantId, supplierId })
+    PurchaseOrder.find({ tenantId, supplierId, deleted: { $ne: true } })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    PurchaseOrder.countDocuments({ tenantId, supplierId }),
+    PurchaseOrder.countDocuments({ tenantId, supplierId, deleted: { $ne: true } }),
   ]);
 
   return { items, total, supplier: { _id: supplier._id, name: supplier.name } };

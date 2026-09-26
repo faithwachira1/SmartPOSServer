@@ -62,6 +62,7 @@ async function resolveSupplier(tenantId, supplierId) {
     _id: supplierId,
     tenantId,
     active: true,
+    deleted: { $ne: true },
   }).lean();
   if (!supplier) throw ApiError.badRequest('SUPPLIER_NOT_FOUND', 'Supplier not found');
   return supplier;
@@ -118,6 +119,7 @@ function buildItems(rawItems, productMap) {
 const list = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePagination(req.query);
   const filter = tenantFilter(req);
+  filter.deleted = { $ne: true };
 
   if (req.query.status) filter.status = req.query.status;
   if (req.query.supplierId) filter.supplierId = req.query.supplierId;
@@ -140,7 +142,7 @@ const list = asyncHandler(async (req, res) => {
 const get = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'poId');
   const po = await PurchaseOrder.findOne(
-    tenantFilter(req, { _id: req.params.id })
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } })
   ).lean();
   if (!po) throw ApiError.notFound('PO_NOT_FOUND', 'Purchase order not found');
   return ok(res, shapePo(po));
@@ -468,13 +470,16 @@ const cancel = asyncHandler(async (req, res) => {
 const remove = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'poId');
 
-  const po = await PurchaseOrder.findOne(tenantFilter(req, { _id: req.params.id }));
+  const po = await PurchaseOrder.findOne(
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } })
+  );
   if (!po) throw ApiError.notFound('PO_NOT_FOUND', 'Purchase order not found');
   if (po.status !== 'draft') {
     throw ApiError.badRequest('NOT_DELETABLE', 'Only draft purchase orders can be deleted');
   }
 
-  await PurchaseOrder.deleteOne({ _id: po._id });
+  po.deleted = true;
+  await po.save();
   return noContent(res);
 });
 

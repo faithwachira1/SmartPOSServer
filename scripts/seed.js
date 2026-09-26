@@ -402,20 +402,59 @@ Violation may lead to suspension or termination.
   ok(`Legal docs: ${inserted} inserted`);
 }
 
+/* ─────────────────────── SYNC BACKFILL ─────────────────────── */
+
+async function backfillSyncFields() {
+  const Sale = require('../models/client/Sale');
+  const Customer = require('../models/client/Customer');
+  const Product = require('../models/client/Product');
+  const Category = require('../models/client/Category');
+  const Supplier = require('../models/client/Supplier');
+  const HeldSale = require('../models/client/HeldSale');
+  const PurchaseOrder = require('../models/client/PurchaseOrder');
+  const InventoryMovement = require('../models/client/InventoryMovement');
+  const Payment = require('../models/client/Payment');
+
+  const tasks = [
+    ['Sale', Sale, { source: 'live', stockWarnings: [] }],
+    ['Customer', Customer, { deleted: false }],
+    ['Product', Product, { deleted: false }],
+    ['Category', Category, { deleted: false }],
+    ['Supplier', Supplier, { deleted: false }],
+    ['HeldSale', HeldSale, { source: 'live', deleted: false }],
+    ['PurchaseOrder', PurchaseOrder, { source: 'live', deleted: false }],
+    ['InventoryMovement', InventoryMovement, { source: 'live' }],
+    ['Payment', Payment, { source: 'live' }],
+  ];
+
+  for (const [label, Model, defaults] of tasks) {
+    let total = 0;
+    for (const [field, value] of Object.entries(defaults)) {
+      const r = await Model.updateMany(
+        { [field]: { $exists: false } },
+        { $set: { [field]: value } }
+      );
+      total += r.modifiedCount;
+    }
+    ok(`${label}: ${total} rows backfilled`);
+  }
+}
+
 /* ─────────────────────── MENU ─────────────────────── */
 
 async function menu() {
   clear();
   line();
-  line(`${C.bold}${C.cyan}╭─────────────────────────────────────╮${C.reset}`);
-  line(`${C.bold}${C.cyan}│   SmartPOS — Seed CLI                  │${C.reset}`);
-  line(`${C.bold}${C.cyan}╰─────────────────────────────────────╯${C.reset}`);
+  line(`${C.bold}${C.cyan}╭───────────────────────────────────────╮${C.reset}`);
+  line(`${C.bold}${C.cyan}│   SmartPOS — Seed CLI                 │${C.reset}`);
+  line(`${C.bold}${C.cyan}╰───────────────────────────────────────╯${C.reset}`);
   line();
   line(`  ${C.bold}1${C.reset}.  Seed all`);
   line(`  ${C.bold}2${C.reset}.  Seed platform settings`);
   line(`  ${C.bold}3${C.reset}.  Seed plans`);
   line(`  ${C.bold}4${C.reset}.  Seed payment methods`);
   line(`  ${C.bold}5${C.reset}.  Seed legal docs`);
+  line(`  ${C.bold}6${C.reset}.  Backfill sync fields`);
   line();
   line(`  ${C.dim}0.  Exit${C.reset}`);
   line();
@@ -456,6 +495,8 @@ async function main() {
         await seedPaymentMethods();
       } else if (choice === '5') {
         await seedLegals();
+      } else if (choice === '6') {
+        await backfillSyncFields();
       } else if (choice === '0') {
         break;
       } else {

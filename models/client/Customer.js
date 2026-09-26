@@ -14,6 +14,10 @@ const schema = new mongoose.Schema(
     visitCount: { type: Number, default: 0 },
     lastPurchaseAt: Date,
     active: { type: Boolean, default: true },
+
+    localId: { type: String, sparse: true, index: true },
+    deviceId: { type: String, sparse: true },
+    deleted: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }
 );
@@ -22,6 +26,8 @@ schema.index({ tenantId: 1, phone: 1 });
 schema.index({ tenantId: 1, email: 1 });
 schema.index({ tenantId: 1, name: 1 });
 schema.index({ tenantId: 1, loyaltyCardNumber: 1 }, { sparse: true });
+schema.index({ tenantId: 1, localId: 1 }, { sparse: true });
+schema.index({ tenantId: 1, deleted: 1, updatedAt: -1 });
 
 schema.set('toJSON', {
   virtuals: true,

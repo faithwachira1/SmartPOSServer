@@ -23,6 +23,7 @@ const externalKeyRoutes = require('./externalKeyRoutes');
 const heldSaleRoutes = require('./heldSaleRoutes');
 const purchaseOrderRoutes = require('./purchaseOrderRoutes');
 const invoiceRoutes = require('./invoiceRoutes');
+const syncRoutes = require('../../sync/syncRoutes');
 
 const router = Router();
 
@@ -49,5 +50,6 @@ router.use('/external-keys', externalKeyRoutes);
 router.use('/held-sales', heldSaleRoutes);
 router.use('/purchase-orders', purchaseOrderRoutes);
 router.use('/invoices', invoiceRoutes);
+router.use('/sync', syncRoutes);
 
 module.exports = router;

@@ -15,6 +15,8 @@ const schema = new mongoose.Schema(
     imagePublicId: String,
     active: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+    deleted: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }
 );
@@ -23,6 +25,7 @@ schema.index({ tenantId: 1, sku: 1 });
 schema.index({ tenantId: 1, barcode: 1 });
 schema.index({ tenantId: 1, active: 1 });
 schema.index({ tenantId: 1, name: 'text' });
+schema.index({ tenantId: 1, deleted: 1, updatedAt: -1 });
 
 schema.set('toJSON', {
   virtuals: true,

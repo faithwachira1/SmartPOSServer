@@ -53,6 +53,7 @@ async function nextSkuForTenant(tenantId, category) {
 const list = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePagination(req.query);
   const filter = tenantFilter(req);
+  filter.deleted = { $ne: true };
 
   if (req.query.active !== undefined) {
     filter.active = req.query.active === 'true';
@@ -79,7 +80,9 @@ const list = asyncHandler(async (req, res) => {
 
 const get = asyncHandler(async (req, res) => {
   assertObjectId(req.params.id, 'productId');
-  const product = await Product.findOne(tenantFilter(req, { _id: req.params.id })).lean();
+  const product = await Product.findOne(
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } })
+  ).lean();
   if (!product) throw ApiError.notFound('PRODUCT_NOT_FOUND', 'Product not found');
   return ok(res, shapeProduct(product));
 });
@@ -169,7 +172,7 @@ const update = asyncHandler(async (req, res) => {
   }
 
   const product = await Product.findOneAndUpdate(
-    tenantFilter(req, { _id: req.params.id }),
+    tenantFilter(req, { _id: req.params.id, deleted: { $ne: true } }),
     patch,
     { new: true }
   ).lean();
@@ -183,7 +186,7 @@ const remove = asyncHandler(async (req, res) => {
 
   const product = await Product.findOneAndUpdate(
     tenantFilter(req, { _id: req.params.id }),
-    { $set: { active: false } },
+    { $set: { active: false, deleted: true } },
     { new: true }
   ).lean();
 

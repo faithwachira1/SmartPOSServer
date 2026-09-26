@@ -7,6 +7,11 @@ const externalRoutes = require('./external');
 
 const router = Router();
 
+// Public health — no auth, no DB. Used by the desktop sync engine.
+router.get('/health', (_req, res) => {
+  res.json({ ok: true, time: Date.now() });
+});
+
 router.use('/public', publicRoutes);
 router.use('/admin', adminRoutes);
 router.use('/client', clientRoutes);

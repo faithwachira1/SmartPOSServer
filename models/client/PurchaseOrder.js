@@ -42,6 +42,12 @@ const schema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     pdfUrl: String,
+
+    localId: { type: String, sparse: true, index: true },
+    deviceId: { type: String, sparse: true },
+    syncedAt: { type: Date, default: null },
+    source: { type: String, enum: ['live', 'offline'], default: 'live' },
+    deleted: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -50,6 +56,7 @@ schema.index({ tenantId: 1, poNumber: 1 }, { unique: true });
 schema.index({ tenantId: 1, status: 1 });
 schema.index({ tenantId: 1, supplierId: 1 });
 schema.index({ tenantId: 1, createdAt: -1 });
+schema.index({ tenantId: 1, localId: 1 }, { sparse: true });
 
 schema.set('toJSON', {
   virtuals: true,
