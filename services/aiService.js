@@ -10,14 +10,23 @@ async function chat(message, systemPrompt, meta = {}) {
     const res = await hdmAi.post(HDM_AI_ENDPOINTS.PUBLIC_CHAT, {
       message,
       system_prompt: systemPrompt,
+      max_tokens: Number(meta.maxTokens) || 2000,
+      temperature: Number(meta.temperature) || 0.6,
     });
 
     if (!res.data?.success) {
       throw new Error(res.data?.error || 'HDM AI unsuccessful');
     }
 
-    const { reply, tokens_used, provider } = res.data.data;
+    const { reply, tokens_used, provider, finish_reason } = res.data.data;
     const latencyMs = Date.now() - t0;
+
+    if (finish_reason === 'length') {
+      logger.warn(
+        { tokensUsed: tokens_used, latencyMs },
+        'hdm ai response truncated by max_tokens'
+      );
+    }
 
     AiUsageLog.create({
       tenantId: meta.tenantId || null,
@@ -29,7 +38,13 @@ async function chat(message, systemPrompt, meta = {}) {
       promptPreview: String(systemPrompt).slice(0, 200),
     }).catch((e) => logger.error({ err: e.message }, 'aiUsageLog failed'));
 
-    return { reply, tokensUsed: tokens_used || 0, provider, latencyMs };
+    return {
+      reply,
+      tokensUsed: tokens_used || 0,
+      provider,
+      latencyMs,
+      finishReason: finish_reason || null,
+    };
   } catch (err) {
     const latencyMs = Date.now() - t0;
 

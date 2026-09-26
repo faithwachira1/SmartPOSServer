@@ -60,55 +60,94 @@ async function buildSystemPrompt() {
   ]);
 
   const features = await PlatformSetting.find({ key: /^feature_/ }).lean();
-  const on = features.filter((f) => f.value === true).map((f) => f.key.replace('feature_', ''));
-  const off = features.filter((f) => f.value !== true).map((f) => f.key.replace('feature_', ''));
+  const on = features
+    .filter((f) => f.value === true)
+    .map((f) => f.key.replace('feature_', ''));
+  const off = features
+    .filter((f) => f.value !== true)
+    .map((f) => f.key.replace('feature_', ''));
 
   const plans = await Plan.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
 
   const lines = [];
   lines.push(
-    `You are the AI assistant on ${platformName}'s landing page. ${platformName} is a point-of-sale platform for small businesses.`
+    `You are the AI assistant on ${platformName}'s landing page. ${platformName} is a point-of-sale platform for small businesses, especially in Africa.`
   );
   lines.push('');
-  lines.push('Available features:');
+
+  lines.push('## Available features');
+  lines.push('');
   for (const f of on) lines.push(`- ${label(f)}`);
   lines.push('');
 
   if (off.length) {
-    lines.push('Not yet available (do not promise these):');
+    lines.push('## Not yet available (never promise these)');
+    lines.push('');
     for (const f of off) lines.push(`- ${label(f)}`);
     lines.push('');
   }
 
   if (plans.length) {
-    lines.push('Pricing:');
+    lines.push('## Pricing');
+    lines.push('');
     for (const p of plans) {
       const price = p.price?.amount
         ? `${p.price.amount} ${p.price.currency}/${p.price.interval}`
         : 'Free';
-      lines.push(`- ${p.name} — ${price}${p.description ? ` (${p.description})` : ''}`);
+      lines.push(
+        `- ${p.name} — ${price}${p.description ? ` (${p.description})` : ''}`
+      );
     }
     lines.push('');
   }
 
-  lines.push('Staff roles: owner, manager, cashier.');
+  lines.push('## Staff roles');
   lines.push('');
+  lines.push('Owner, manager, cashier — each with different permissions.');
+  lines.push('');
+
   if (supportEmail) lines.push(`Support email: ${supportEmail}`);
   if (supportPhone) lines.push(`Support phone: ${supportPhone}`);
   if (website) lines.push(`Website: ${website}`);
   lines.push('');
-  lines.push('Rules:');
-  lines.push('- Only describe features listed as available above. Do not invent features.');
+
+  lines.push('## How to answer');
+  lines.push('');
+  lines.push('Structure every response as:');
+  lines.push('');
+  lines.push('1. **Direct answer** — 1–2 sentences that resolve the question.');
   lines.push(
-    '- IMPORTANT: If a feature IS listed as available, answer confidently and describe it. Do not deflect to support for available features.'
+    '2. **Detail** — 2–4 sentences explaining how the feature works, with concrete steps if applicable.'
   );
   lines.push(
-    '- Only suggest contacting support if the question is about: pricing negotiations, custom development, enterprise contracts, data migration, or something genuinely not listed.'
+    '3. **Related capabilities** — 1–3 other features that might interest them.'
   );
   lines.push(
-    "- When asked about offline capability, describe the desktop app: it runs fully offline on the cashier's machine, sales are saved locally, and data syncs to the cloud when the internet returns."
+    `4. **Next step** — a concrete action they can take: register, email ${supportEmail || 'support'}, or read more on the site.`
   );
-  lines.push('- Keep replies concise (2–4 short paragraphs max).');
+  lines.push('');
+
+  lines.push('## Style rules');
+  lines.push('');
+  lines.push('- Minimum 100 words for any feature or pricing question.');
+  lines.push(
+    '- Never answer with a single sentence. Even a yes/no gets context.'
+  );
+  lines.push(
+    '- Use concrete examples: "You can scan barcodes with any USB scanner", not "barcode support is available".'
+  );
+  lines.push(
+    '- Only describe features listed as available above. Do not invent features.'
+  );
+  lines.push(
+    '- IMPORTANT: If a feature IS listed as available, answer confidently and describe it in detail. Do not deflect to support for available features.'
+  );
+  lines.push(
+    '- Only suggest contacting support for: pricing negotiations, custom development, enterprise contracts, data migration, or questions about features NOT listed.'
+  );
+  lines.push(
+    "- When asked about offline capability, describe the desktop app in detail: it runs fully offline on the cashier's machine, sales save locally in SQLite, and data syncs to the cloud automatically when the internet returns."
+  );
   lines.push(`- Reply in the user's language.`);
 
   const prompt = lines.join('\n');
@@ -148,11 +187,16 @@ async function reply({ text, ip }) {
     const systemPrompt = await buildSystemPrompt();
     const { reply: answer, tokensUsed } = await chat(text, systemPrompt, {
       type: 'public_chat',
+      maxTokens: 2000,
+      temperature: 0.6,
     });
     return { reply: answer, tokensUsed };
   } catch (err) {
     logger.error({ err: err.message, ip }, 'publicChat failed');
-    const fallback = await PlatformSetting.getValue('support_email', 'support@smartpos.co.ke');
+    const fallback = await PlatformSetting.getValue(
+      'support_email',
+      'support@smartpos.co.ke'
+    );
     return {
       reply: `Sorry, I'm having trouble right now. Email ${fallback}`,
       tokensUsed: 0,
