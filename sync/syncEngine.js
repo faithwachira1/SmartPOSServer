@@ -38,10 +38,6 @@ function stripInternal(doc) {
   return out;
 }
 
-// ──────────────────────────────────────────────────────────────
-// PULL
-// ──────────────────────────────────────────────────────────────
-
 async function pullCatalog({ tenantId, branchId, since }) {
   const sinceDate = parseSince(since);
 
@@ -62,14 +58,15 @@ async function pullCatalog({ tenantId, branchId, since }) {
 
   const filterDeleted = (rows) => rows.filter((r) => !r.deleted);
   const collectTombstones = (rows) =>
-    rows.filter((r) => r.deleted && r.updatedAt && r.updatedAt > sinceDate).map((r) => String(r._id));
+    rows
+      .filter((r) => r.deleted && r.updatedAt && r.updatedAt > sinceDate)
+      .map((r) => String(r._id));
 
   const products = filterByUpdatedAt(allProducts);
   const categories = filterByUpdatedAt(allCategories);
   const customers = filterByUpdatedAt(allCustomers);
   const staff = filterByUpdatedAt(allStaff);
 
-  // Stock is derived from products' current stock. Per-branch comes later.
   const branchStock = allProducts
     .filter((p) => p.active)
     .map((p) => ({
@@ -128,10 +125,6 @@ const pull = asyncHandler(async (req, res) => {
 
   return ok(res, data);
 });
-
-// ──────────────────────────────────────────────────────────────
-// PUSH — sale + customer processors
-// ──────────────────────────────────────────────────────────────
 
 async function resolveCustomerRef({ tenantId, payload }) {
   if (!payload.customerLocalId) return null;
@@ -205,13 +198,20 @@ async function processSale({ tenantId, branchId, device, item }) {
     if (!product) {
       warnings.push('PRODUCT_NOT_FOUND');
     }
+
+    const qty = Number(i.qty ?? i.quantity) || 0;
+    const price = Math.round(Number(i.price) || 0);
+    const subtotal = Math.round(
+      Number(i.subtotal) || price * qty || 0
+    );
+
     return {
       productId: i.productId ? new mongoose.Types.ObjectId(i.productId) : null,
       name: i.name || product?.name || 'Unknown',
       sku: i.sku || product?.sku || null,
-      qty: Number(i.qty) || 0,
-      price: Math.round(Number(i.price) || 0),
-      subtotal: Math.round(Number(i.subtotal) || Number(i.price) * Number(i.qty) || 0),
+      qty,
+      price,
+      subtotal,
     };
   });
 
@@ -304,10 +304,6 @@ async function processSale({ tenantId, branchId, device, item }) {
 
   return { record: doc.toObject(), warnings: doc.stockWarnings || [] };
 }
-
-// ──────────────────────────────────────────────────────────────
-// PUSH — main handler
-// ──────────────────────────────────────────────────────────────
 
 const push = asyncHandler(async (req, res) => {
   const { schemaVersion, items } = req.body || {};
@@ -419,7 +415,11 @@ const push = asyncHandler(async (req, res) => {
   const stockUpdates = [];
   if (affectedProductIds.size > 0) {
     const fresh = await Product.find({
-      _id: { $in: [...affectedProductIds].map((id) => new mongoose.Types.ObjectId(id)) },
+      _id: {
+        $in: [...affectedProductIds].map(
+          (id) => new mongoose.Types.ObjectId(id)
+        ),
+      },
       tenantId,
     })
       .select('_id stock')
@@ -445,10 +445,6 @@ const push = asyncHandler(async (req, res) => {
     conflicts: [],
   });
 });
-
-// ──────────────────────────────────────────────────────────────
-// REGISTER DEVICE
-// ──────────────────────────────────────────────────────────────
 
 const registerDevice = asyncHandler(async (req, res) => {
   const { deviceId, deviceName, platform, appVersion, branchId } = req.body || {};
