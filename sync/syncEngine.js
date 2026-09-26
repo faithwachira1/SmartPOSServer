@@ -16,6 +16,8 @@ const { logger } = require('../utils/logger');
 const SCHEMA_VERSION = 1;
 const EPOCH = new Date(0);
 const MAX_ITEMS_PER_PUSH = 100;
+const RECENT_SALES_DAYS = 30;
+const RECENT_SALES_LIMIT = 200;
 
 function parseSince(input) {
   if (!input) return EPOCH;
@@ -46,12 +48,26 @@ async function pullCatalog({ tenantId, branchId, since }) {
   const customerQuery = Customer.find({ tenantId }).lean();
   const staffQuery = User.find({ tenantId }).lean();
 
-  const [allProducts, allCategories, allCustomers, allStaff] = await Promise.all([
-    productQuery,
-    categoryQuery,
-    customerQuery,
-    staffQuery,
-  ]);
+  const recentSalesCutoff = new Date();
+  recentSalesCutoff.setDate(recentSalesCutoff.getDate() - RECENT_SALES_DAYS);
+
+  const recentSalesQuery = Sale.find({
+    tenantId,
+    createdAt: { $gte: recentSalesCutoff },
+    voided: { $ne: true },
+  })
+    .sort({ createdAt: -1 })
+    .limit(RECENT_SALES_LIMIT)
+    .lean();
+
+  const [allProducts, allCategories, allCustomers, allStaff, recentSales] =
+    await Promise.all([
+      productQuery,
+      categoryQuery,
+      customerQuery,
+      staffQuery,
+      recentSalesQuery,
+    ]);
 
   const filterByUpdatedAt = (rows) =>
     rows.filter((r) => !r.updatedAt || r.updatedAt > sinceDate);
@@ -101,6 +117,22 @@ async function pullCatalog({ tenantId, branchId, since }) {
     settings,
     branch,
     branchStock,
+    recentSales: recentSales.map((s) => ({
+      _id: String(s._id),
+      saleNumber: s.saleNumber,
+      total: Number(s.total) || 0,
+      currency: s.currency || 'KES',
+      paymentMethod: s.paymentMethod || null,
+      customerName: s.customerName || null,
+      items: (s.items || []).map((i) => ({
+        productId: i.productId ? String(i.productId) : null,
+        name: i.name || '',
+        qty: Number(i.qty) || 0,
+        price: Number(i.price) || 0,
+        subtotal: Number(i.subtotal) || 0,
+      })),
+      createdAt: s.createdAt,
+    })),
     tombstones: {
       products: collectTombstones(products),
       categories: collectTombstones(categories),
