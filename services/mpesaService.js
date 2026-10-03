@@ -1,14 +1,48 @@
+'use strict';
+
 const axios = require('axios');
 const { env } = require('../config/env');
-const crypto = require('../utils/crypto');
-const cacheService = require('./cacheService');
-const { ApiError } = require('../utils/apiError');
-const { logger } = require('../utils/logger');
-const Tenant = require('../models/admin/Tenant');
 
-const BASE_URLS = {
-  sandbox: 'https://sandbox.safaricom.co.ke',
-  production: 'https://api.safaricom.co.ke',
+class MpesaError extends Error {
+  constructor(message, code, raw) {
+    super(message);
+    this.name = 'MpesaError';
+    this.code = code;
+    this.raw = raw;
+  }
+}
+
+const SAFARICOM_IPS = [
+  '196.201.214.200',
+  '196.201.214.206',
+  '196.201.213.114',
+  '196.201.214.207',
+  '196.201.214.208',
+  '196.201.213.44',
+  '196.201.212.127',
+  '196.201.212.138',
+  '196.201.212.129',
+  '196.201.212.136',
+  '196.201.212.74',
+  '196.201.212.69',
+];
+
+const RESULT_CODES = {
+  SUCCESS: '0',
+  INSUFFICIENT_FUNDS: '1',
+  LESS_THAN_MINIMUM: '1001',
+  EXCEED_MAX_AMOUNT: '1002',
+  EXCEED_DAILY_LIMIT: '1003',
+  EXCEED_MIN_BALANCE: '1004',
+  INVALID_ACCOUNT: '1006',
+  USER_UNREACHABLE: '1019',
+  USER_CANCELLED: '1032',
+  DS_TIMEOUT: '1037',
+  WRONG_PIN: '2001',
+  AGENT_STORE_MISMATCH: '2002',
+  TRANSACTION_NOT_FOUND: '500.001.1001',
+  MERCHANT_NOT_EXIST: '4999',
+  UNRESOLVED_REASON: '2029',
 };
 
 const ENDPOINTS = {
@@ -17,7 +51,99 @@ const ENDPOINTS = {
   STK_QUERY: '/mpesa/stkpushquery/v1/query',
 };
 
-function timestamp() {
+let LOGGER = console;
+
+function buildConfigFromEnv() {
+  return {
+    baseUrl: env.mpesa.baseUrl,
+    consumerKey: env.mpesa.consumerKey,
+    consumerSecret: env.mpesa.consumerSecret,
+    shortCode: env.mpesa.shortcode,
+    tillNumber: env.mpesa.tillNumber,
+    passkey: env.mpesa.passkey,
+    callbackUrl: env.mpesa.callbackUrl,
+    transactionType: env.mpesa.transactionType,
+  };
+}
+
+let CONFIG = buildConfigFromEnv();
+
+let tokenCache = { token: null, expiresAt: 0 };
+
+const seenCallbacks = new Map();
+const CALLBACK_TTL_MS = 24 * 60 * 60 * 1000;
+
+function pruneSeenCallbacks() {
+  const now = Date.now();
+  for (const [key, ts] of seenCallbacks.entries()) {
+    if (now - ts > CALLBACK_TTL_MS) seenCallbacks.delete(key);
+  }
+}
+
+function configure(overrides = {}) {
+  const { logger, ...rest } = overrides;
+  CONFIG = { ...CONFIG, ...rest };
+
+  if (logger) LOGGER = logger;
+
+  if (
+    'consumerKey' in rest ||
+    'consumerSecret' in rest ||
+    'baseUrl' in rest
+  ) {
+    tokenCache = { token: null, expiresAt: 0 };
+  }
+}
+
+function reloadFromEnv() {
+  CONFIG = buildConfigFromEnv();
+  tokenCache = { token: null, expiresAt: 0 };
+  LOGGER.info('[mpesa] Config reloaded from env');
+}
+
+function getConfig() {
+  return { ...CONFIG };
+}
+
+async function getAccessToken() {
+  const now = Date.now();
+
+  if (tokenCache.token && tokenCache.expiresAt > now + 60000) {
+    return tokenCache.token;
+  }
+
+  if (!CONFIG.consumerKey || !CONFIG.consumerSecret) {
+    throw new MpesaError('M-PESA credentials not configured', 'CONFIG_MISSING');
+  }
+
+  const auth = Buffer.from(
+    `${CONFIG.consumerKey}:${CONFIG.consumerSecret}`
+  ).toString('base64');
+
+  try {
+    const { data } = await axios.get(`${CONFIG.baseUrl}${ENDPOINTS.OAUTH}`, {
+      headers: { Authorization: `Basic ${auth}` },
+      timeout: 15000,
+    });
+
+    tokenCache = {
+      token: data.access_token,
+      expiresAt: now + Number(data.expires_in) * 1000,
+    };
+
+    return data.access_token;
+  } catch (error) {
+    const err = error.response?.data || error.message;
+    LOGGER.error('[mpesa] OAuth error:', err);
+    throw new MpesaError(
+      typeof err === 'string' ? err : JSON.stringify(err),
+      'OAUTH_FAILED',
+      err
+    );
+  }
+}
+
+function getTimestamp() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   return (
@@ -30,203 +156,226 @@ function timestamp() {
   );
 }
 
-function password(shortcode, passkey, ts) {
-  return Buffer.from(`${shortcode}${passkey}${ts}`).toString('base64');
-}
-
-function baseUrlFor(envName) {
-  return BASE_URLS[envName] || BASE_URLS.sandbox;
-}
-
-async function getAccessToken(creds) {
-  if (!creds?.consumerKey || !creds?.consumerSecret) {
-    throw ApiError.badRequest(
-      'MPESA_CREDS_MISSING',
-      'M-Pesa credentials are not configured'
-    );
-  }
-
-  const envName = creds.env || 'sandbox';
-  const cacheKey = `mpesa:token:${creds.tenantId || 'platform'}:${envName}:${creds.consumerKey.slice(0, 8)}`;
-
-  const cached = await cacheService.get(cacheKey);
-  if (cached) return cached;
-
-  const auth = Buffer.from(
-    `${creds.consumerKey}:${creds.consumerSecret}`
+function generatePassword(timestamp) {
+  return Buffer.from(
+    `${CONFIG.shortCode}${CONFIG.passkey}${timestamp}`
   ).toString('base64');
-
-  try {
-    const res = await axios.get(`${baseUrlFor(envName)}${ENDPOINTS.OAUTH}`, {
-      headers: { Authorization: `Basic ${auth}` },
-      timeout: 15000,
-    });
-    const token = res.data.access_token;
-    if (!token) {
-      throw new Error('No access token in response');
-    }
-    await cacheService.set(cacheKey, token, 3000);
-    return token;
-  } catch (err) {
-    logger.error({ err: err.message, env: envName }, 'mpesa token failed');
-    throw ApiError.internal('MPESA_AUTH', 'M-Pesa authentication failed');
-  }
 }
 
-async function stkPush(creds, { phone, amount, accountRef, description }) {
-  const token = await getAccessToken(creds);
-  const envName = creds.env || 'sandbox';
-  const ts = timestamp();
-  const pwd = password(creds.shortcode, creds.passkey, ts);
-  const callbackUrl = creds.callbackUrl || env.mpesa.callbackUrl;
+function normalizePhone(phone) {
+  let p = String(phone).replace(/\D/g, '');
+  if (p.startsWith('0')) p = '254' + p.slice(1);
+  else if (p.startsWith('7') || p.startsWith('1')) p = '254' + p;
+  return p;
+}
 
-  if (!callbackUrl) {
-    throw ApiError.internal(
-      'MPESA_NO_CALLBACK',
-      'M-Pesa callback URL is not configured'
-    );
+function resolvePartyB() {
+  return CONFIG.tillNumber || CONFIG.shortCode;
+}
+
+async function initiateSTKPush({
+  phone,
+  amount,
+  accountReference = 'Subscription',
+  description = 'App Subscription Payment',
+}) {
+  if (!CONFIG.shortCode || !CONFIG.passkey || !CONFIG.callbackUrl) {
+    return {
+      success: false,
+      error: {
+        errorMessage: 'M-PESA config missing (shortCode, passkey, callbackUrl)',
+      },
+    };
   }
 
+  let token;
   try {
-    const res = await axios.post(
-      `${baseUrlFor(envName)}${ENDPOINTS.STK_PUSH}`,
+    token = await getAccessToken();
+  } catch (err) {
+    return {
+      success: false,
+      error: { errorMessage: err.message, code: err.code },
+    };
+  }
+
+  const timestamp = getTimestamp();
+  const password = generatePassword(timestamp);
+  const normalizedPhone = normalizePhone(phone);
+  const partyB = resolvePartyB();
+
+  const payload = {
+    BusinessShortCode: CONFIG.shortCode,
+    Password: password,
+    Timestamp: timestamp,
+    TransactionType: CONFIG.transactionType,
+    Amount: Math.round(amount),
+    PartyA: normalizedPhone,
+    PartyB: partyB,
+    PhoneNumber: normalizedPhone,
+    CallBackURL: CONFIG.callbackUrl,
+    AccountReference: accountReference,
+    TransactionDesc: description,
+  };
+
+  try {
+    const { data } = await axios.post(
+      `${CONFIG.baseUrl}${ENDPOINTS.STK_PUSH}`,
+      payload,
       {
-        BusinessShortCode: creds.shortcode,
-        Password: pwd,
-        Timestamp: ts,
-        TransactionType: 'CustomerPayBillOnline',
-        Amount: Math.round(amount),
-        PartyA: phone,
-        PartyB: creds.shortcode,
-        PhoneNumber: phone,
-        CallBackURL: callbackUrl,
-        AccountReference: accountRef,
-        TransactionDesc: description,
-      },
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 20000,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
       }
     );
 
     return {
       success: true,
-      checkoutRequestId: res.data.CheckoutRequestID,
-      merchantRequestId: res.data.MerchantRequestID,
-      customerMessage: res.data.CustomerMessage,
-      raw: res.data,
+      merchantRequestId: data.MerchantRequestID,
+      checkoutRequestId: data.CheckoutRequestID,
+      responseCode: data.ResponseCode,
+      responseDescription: data.ResponseDescription,
+      customerMessage: data.CustomerMessage,
     };
-  } catch (err) {
-    const detail =
-      err.response?.data?.errorMessage ||
-      err.response?.data?.errorCode ||
-      err.message;
-    logger.error(
-      { err: detail, env: envName, shortcode: creds.shortcode },
-      'mpesa stk push failed'
-    );
-    throw ApiError.badRequest(
-      'MPESA_STK_FAILED',
-      detail || 'Could not initiate M-Pesa payment'
-    );
+  } catch (error) {
+    const err = error.response?.data || error.message;
+    LOGGER.error('[mpesa] STK Push error:', err);
+    return { success: false, error: err };
   }
 }
 
-async function queryStkStatus(creds, checkoutRequestId) {
-  const token = await getAccessToken(creds);
-  const envName = creds.env || 'sandbox';
-  const ts = timestamp();
-  const pwd = password(creds.shortcode, creds.passkey, ts);
+async function querySTKStatus(checkoutRequestId) {
+  let token;
+  try {
+    token = await getAccessToken();
+  } catch (err) {
+    return {
+      success: false,
+      error: { errorMessage: err.message, code: err.code },
+    };
+  }
+
+  const timestamp = getTimestamp();
+  const password = generatePassword(timestamp);
+
+  const payload = {
+    BusinessShortCode: CONFIG.shortCode,
+    Password: password,
+    Timestamp: timestamp,
+    CheckoutRequestID: checkoutRequestId,
+  };
 
   try {
-    const res = await axios.post(
-      `${baseUrlFor(envName)}${ENDPOINTS.STK_QUERY}`,
+    const { data } = await axios.post(
+      `${CONFIG.baseUrl}${ENDPOINTS.STK_QUERY}`,
+      payload,
       {
-        BusinessShortCode: creds.shortcode,
-        Password: pwd,
-        Timestamp: ts,
-        CheckoutRequestID: checkoutRequestId,
-      },
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 15000,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
       }
     );
-    return { success: true, raw: res.data };
-  } catch (err) {
-    const detail = err.response?.data?.errorMessage || err.message;
-    logger.error({ err: detail }, 'mpesa query failed');
-    return { success: false, error: detail };
+
+    return {
+      success: true,
+      resultCode: String(data.ResultCode),
+      resultDesc: data.ResultDesc,
+      responseCode: data.ResponseCode,
+    };
+  } catch (error) {
+    const err = error.response?.data || error.message;
+    LOGGER.error('[mpesa] STK Query error:', err);
+    return { success: false, error: err };
   }
 }
 
-async function resolveCreds(tenantId) {
-  // IMPORTANT: no fallback to platform env creds.
-  // If the tenant hasn't configured their own M-Pesa, STK must fail.
-  // The only env value used here is the callback URL, which is a platform
-  // concern — Safaricom always calls back to our server, not the tenant's.
-  const tenant = await Tenant.findById(tenantId).lean();
-  if (!tenant) {
-    throw ApiError.notFound('TENANT_NOT_FOUND', 'Tenant not found');
+function parseCallback(body) {
+  const cb = body?.Body?.stkCallback;
+  if (!cb) return { success: false, error: 'Invalid callback payload' };
+
+  const { MerchantRequestID, CheckoutRequestID, ResultCode, ResultDesc } = cb;
+
+  if (ResultCode !== 0) {
+    return {
+      success: false,
+      merchantRequestId: MerchantRequestID,
+      checkoutRequestId: CheckoutRequestID,
+      resultCode: String(ResultCode),
+      resultDesc: ResultDesc,
+    };
   }
 
-  const s = tenant.settings || {};
-  if (s.mpesaStkEnabled !== true) {
-    throw ApiError.badRequest(
-      'MPESA_NOT_CONFIGURED',
-      'M-Pesa STK checkout is not enabled for this business'
-    );
-  }
-
-  const m = s.mpesa || {};
-  if (
-    !m.shortcode ||
-    !m.consumerKeyEnc ||
-    !m.consumerSecretEnc ||
-    !m.passkeyEnc
-  ) {
-    throw ApiError.badRequest(
-      'MPESA_CREDS_MISSING',
-      'M-Pesa credentials are incomplete — please finish setup in Settings → Payments'
-    );
-  }
+  const items = cb.CallbackMetadata?.Item || [];
+  const get = (name) => items.find((i) => i.Name === name)?.Value;
 
   return {
-    tenantId: String(tenant._id),
-    env: m.env || 'sandbox',
-    shortcode: m.shortcode,
-    consumerKey: crypto.decrypt(m.consumerKeyEnc),
-    consumerSecret: crypto.decrypt(m.consumerSecretEnc),
-    passkey: crypto.decrypt(m.passkeyEnc),
-    callbackUrl: env.mpesa.callbackUrl,
+    success: true,
+    merchantRequestId: MerchantRequestID,
+    checkoutRequestId: CheckoutRequestID,
+    resultCode: String(ResultCode),
+    resultDesc: ResultDesc,
+    amount: get('Amount'),
+    mpesaReceiptNumber: get('MpesaReceiptNumber'),
+    transactionDate: get('TransactionDate'),
+    phoneNumber: get('PhoneNumber'),
   };
 }
 
-function parseCallback(payload) {
-  const stk = payload?.Body?.stkCallback;
-  if (!stk) return { success: false, error: 'Invalid callback shape' };
+function isDuplicateCallback(checkoutRequestId) {
+  if (!checkoutRequestId) return false;
+  pruneSeenCallbacks();
+  if (seenCallbacks.has(checkoutRequestId)) return true;
+  seenCallbacks.set(checkoutRequestId, Date.now());
+  return false;
+}
 
-  const resultCode = stk.ResultCode;
-  const items = stk.CallbackMetadata?.Item || [];
-  const pick = (name) => items.find((i) => i.Name === name)?.Value;
+function isSafaricomIp(ip) {
+  if (!ip) return false;
+  const clean = String(ip).replace('::ffff:', '').split(',')[0].trim();
+  return SAFARICOM_IPS.includes(clean);
+}
+
+async function waitForResult(
+  checkoutRequestId,
+  { timeoutMs = 300000, intervalMs = 3000 } = {}
+) {
+  const start = Date.now();
+  const pendingCodes = new Set([
+    RESULT_CODES.TRANSACTION_NOT_FOUND,
+    '500.001.1001',
+    '4999',
+  ]);
+
+  while (Date.now() - start < timeoutMs) {
+    const r = await querySTKStatus(checkoutRequestId);
+    if (r.success && !pendingCodes.has(r.resultCode)) {
+      return r;
+    }
+    await new Promise((res) => setTimeout(res, intervalMs));
+  }
 
   return {
-    success: resultCode === 0,
-    resultCode,
-    resultDesc: stk.ResultDesc,
-    checkoutRequestId: stk.CheckoutRequestID,
-    merchantRequestId: stk.MerchantRequestID,
-    amount: pick('Amount'),
-    mpesaReceiptNumber: pick('MpesaReceiptNumber'),
-    transactionDate: pick('TransactionDate'),
-    phone: pick('PhoneNumber'),
+    success: false,
+    error: { errorMessage: 'timeout', code: 'TIMEOUT' },
   };
 }
 
 module.exports = {
+  configure,
+  reloadFromEnv,
+  getConfig,
   getAccessToken,
-  stkPush,
-  queryStkStatus,
-  resolveCreds,
+  initiateSTKPush,
+  querySTKStatus,
   parseCallback,
+  normalizePhone,
+  isDuplicateCallback,
+  isSafaricomIp,
+  waitForResult,
+  MpesaError,
+  SAFARICOM_IPS,
+  RESULT_CODES,
 };

@@ -31,14 +31,17 @@ const optional = [
   'MPESA_CONSUMER_KEY',
   'MPESA_CONSUMER_SECRET',
   'MPESA_SHORTCODE',
+  'MPESA_TILL_NUMBER',
   'MPESA_PASSKEY',
   'MPESA_CALLBACK_URL',
+  'MPESA_TRANSACTION_TYPE',
+  'MPESA_BASE_URL',
+  'M_PESA_ENCRYPTION_KEY',
   'DISABLE_SCHEDULERS',
   'RATE_LIMIT_ENABLED',
   'RATE_LIMIT_WINDOW_MS',
   'RATE_LIMIT_MAX',
   'RATE_LIMIT_AUTH_MAX',
-  'M_PESA_ENCRYPTION_KEY',
 ];
 
 const missing = required.filter((k) => !process.env[k]);
@@ -68,6 +71,7 @@ if (process.env.NODE_ENV === 'production' && !process.env.M_PESA_ENCRYPTION_KEY)
   console.error('M_PESA_ENCRYPTION_KEY is required in production');
   process.exit(1);
 }
+
 if (process.env.M_PESA_ENCRYPTION_KEY) {
   const keyBuf = Buffer.from(process.env.M_PESA_ENCRYPTION_KEY, 'hex');
   if (keyBuf.length !== 32) {
@@ -78,6 +82,19 @@ if (process.env.M_PESA_ENCRYPTION_KEY) {
   console.warn(
     'M_PESA_ENCRYPTION_KEY not set — tenant M-Pesa STK checkout will be disabled'
   );
+}
+
+const MPESA_BASE_URLS = {
+  sandbox: 'https://sandbox.safaricom.co.ke',
+  production: 'https://api.safaricom.co.ke',
+};
+
+function resolveMpesaBaseUrl() {
+  if (process.env.MPESA_BASE_URL) {
+    return process.env.MPESA_BASE_URL;
+  }
+  const envName = process.env.MPESA_ENV || 'production';
+  return MPESA_BASE_URLS[envName] || MPESA_BASE_URLS.production;
 }
 
 if (process.env.MPESA_CALLBACK_URL) {
@@ -94,27 +111,32 @@ const env = Object.freeze({
   port: Number(process.env.PORT),
   apiBaseUrl: process.env.API_BASE_URL || '',
   mongodbUri: process.env.MONGODB_URI,
+
   redis: {
     enabled: process.env.REDIS_ENABLED === 'true',
     url: process.env.REDIS_URL,
   },
+
   jwt: {
     secret: process.env.JWT_SECRET,
     refreshSecret: process.env.JWT_REFRESH_SECRET,
     accessTtl: process.env.JWT_ACCESS_TTL,
     refreshTtl: process.env.JWT_REFRESH_TTL,
   },
+
   mail: {
     apiUrl: process.env.HDM_API_URL,
     apiKey: process.env.HDM_API_KEY,
     fromEmail: process.env.HDM_FROM_EMAIL,
     fromName: process.env.HDM_FROM_NAME,
   },
+
   brevo: {
     apiKey: process.env.BREVO_API_KEY || '',
     sender: process.env.BREVO_SENDER_NAME || 'SmartPOS',
     enabled: Boolean(process.env.BREVO_API_KEY),
   },
+
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',
@@ -125,25 +147,34 @@ const env = Object.freeze({
         process.env.CLOUDINARY_API_SECRET
     ),
   },
+
   hdmAi: {
     url: process.env.HDM_AI_URL,
     key: process.env.HDM_AI_KEY,
   },
+
   mpesa: {
-    env: process.env.MPESA_ENV || 'sandbox',
+    env: process.env.MPESA_ENV || 'production',
+    baseUrl: resolveMpesaBaseUrl(),
     consumerKey: process.env.MPESA_CONSUMER_KEY || '',
     consumerSecret: process.env.MPESA_CONSUMER_SECRET || '',
     shortcode: process.env.MPESA_SHORTCODE || '',
+    tillNumber: process.env.MPESA_TILL_NUMBER || '',
     passkey: process.env.MPESA_PASSKEY || '',
     callbackUrl: process.env.MPESA_CALLBACK_URL || '',
+    transactionType:
+      process.env.MPESA_TRANSACTION_TYPE || 'CustomerPayBillOnline',
   },
+
   mpesaEncryptionKey: process.env.M_PESA_ENCRYPTION_KEY || '',
+
   cors: {
     origins: process.env.CORS_ORIGINS
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
   },
+
   appUrl: process.env.APP_URL,
   adminUrl: process.env.ADMIN_URL,
   disableSchedulers: process.env.DISABLE_SCHEDULERS === 'true',
