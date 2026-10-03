@@ -9,6 +9,39 @@ const Tenant = require('../../models/admin/Tenant');
 const User = require('../../models/client/User');
 const Subscription = require('../../models/admin/Subscription');
 
+function coerceBody(body) {
+  if (!body) return {};
+
+  if (typeof body === 'object' && body.Body) return body;
+
+  if (Buffer.isBuffer(body)) {
+    try {
+      return JSON.parse(body.toString('utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  if (typeof body === 'object' && body[0] !== undefined) {
+    try {
+      const buf = Buffer.from(Object.values(body));
+      return JSON.parse(buf.toString('utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  if (typeof body === 'string') {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return {};
+    }
+  }
+
+  return body;
+}
+
 async function notifyInvoicePaid(invoice, method, reference) {
   try {
     const tenant = await Tenant.findById(invoice.tenantId).lean();
@@ -163,7 +196,7 @@ async function handleSubscriptionPayment(payment, parsed) {
 }
 
 const mpesaCallback = asyncHandler(async (req, res) => {
-  const payload = req.body;
+  const payload = coerceBody(req.body);
   const parsed = mpesaService.parseCallback(payload);
 
   logger.info(
@@ -178,7 +211,10 @@ const mpesaCallback = asyncHandler(async (req, res) => {
   );
 
   if (!parsed.checkoutRequestId) {
-    logger.warn({ payload }, 'mpesa callback: no checkoutRequestId');
+    logger.warn(
+      { contentType: req.headers['content-type'], payload },
+      'mpesa callback: no checkoutRequestId'
+    );
     return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
   }
 
