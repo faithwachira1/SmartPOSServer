@@ -78,11 +78,17 @@ async function handleInvoicePayment(payment, parsed) {
     });
   }
 
-  if (!invoice) return;
+  if (!invoice) {
+    logger.error(
+      { checkoutRequestId: parsed.checkoutRequestId },
+      'STK callback: invoice not found'
+    );
+    return;
+  }
 
   if (parsed.success) {
     invoice.status = 'paid';
-    invoice.amountPaid = invoice.amountDue;
+    invoice.amountPaid = invoice.total;
     invoice.amountDue = 0;
     invoice.paidAt = new Date();
     invoice.paymentMethod = 'mpesa_stk';
@@ -98,9 +104,7 @@ async function handleInvoicePayment(payment, parsed) {
       'invoice paid via STK callback'
     );
 
-    notifyInvoicePaid(invoice, 'mpesa_stk', parsed.mpesaReceiptNumber).catch(
-      () => {}
-    );
+    notifyInvoicePaid(invoice, 'mpesa_stk', parsed.mpesaReceiptNumber).catch(() => {});
   } else {
     logger.warn(
       { invoiceNumber: invoice.invoiceNumber, resultDesc: parsed.resultDesc },
@@ -162,21 +166,59 @@ const mpesaCallback = asyncHandler(async (req, res) => {
   const payload = req.body;
   const parsed = mpesaService.parseCallback(payload);
 
+  logger.info(
+    {
+      checkoutRequestId: parsed.checkoutRequestId,
+      success: parsed.success,
+      resultCode: parsed.resultCode,
+      resultDesc: parsed.resultDesc,
+      receipt: parsed.mpesaReceiptNumber,
+    },
+    'mpesa callback parsed'
+  );
+
   if (!parsed.checkoutRequestId) {
+    logger.warn({ payload }, 'mpesa callback: no checkoutRequestId');
+    return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+  }
+
+  if (mpesaService.isDuplicateCallback(parsed.checkoutRequestId)) {
+    logger.warn(
+      { checkoutRequestId: parsed.checkoutRequestId },
+      'duplicate mpesa callback ignored'
+    );
     return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
   }
 
   const payment = await Payment.findOne({
-    providerRef: parsed.checkoutRequestId,
+    $or: [
+      { providerRef: parsed.checkoutRequestId },
+      { mpesaReceipt: parsed.checkoutRequestId },
+    ],
   });
 
   if (payment) {
+    const wasAlreadyFinal = payment.status === 'success' || payment.status === 'failed';
+
     payment.status = parsed.success ? 'success' : 'failed';
     payment.providerPayload = payload;
-    if (parsed.success && parsed.mpesaReceiptNumber) {
-      payment.providerRef = parsed.mpesaReceiptNumber;
+
+    if (parsed.success) {
+      payment.mpesaReceipt = parsed.mpesaReceiptNumber || null;
+      payment.paidAt = new Date();
+    } else {
+      payment.failureReason = parsed.resultDesc || null;
     }
+
     await payment.save();
+
+    if (wasAlreadyFinal) {
+      logger.warn(
+        { paymentId: String(payment._id), status: payment.status },
+        'payment was already final — skipping handler'
+      );
+      return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+    }
 
     try {
       if (payment.purpose === 'subscription') {
@@ -200,14 +242,19 @@ const mpesaCallback = asyncHandler(async (req, res) => {
     const invoice = await Invoice.findOne({
       'stkLastRequest.checkoutRequestId': parsed.checkoutRequestId,
     });
+
     if (invoice) {
+      logger.warn(
+        { invoiceNumber: invoice.invoiceNumber },
+        'STK callback: no payment row, recovering via invoice'
+      );
       await handleInvoicePayment(
         { invoiceId: invoice._id, tenantId: invoice.tenantId },
         parsed
       );
     } else {
-      logger.warn(
-        { checkoutRequestId: parsed.checkoutRequestId },
+      logger.error(
+        { checkoutRequestId: parsed.checkoutRequestId, payload },
         'STK callback: no matching payment or invoice'
       );
     }

@@ -108,8 +108,6 @@ function humanDate(d) {
   });
 }
 
-/* ─── AUTH ─── */
-
 const verification = ({ brand, name, verifyUrl, expiresIn = '24 hours' }) => ({
   subject: `Verify your ${brand.name} account`,
   html: layout(brand, {
@@ -156,8 +154,6 @@ const passwordChanged = ({ brand, fullName, when, ip }) => ({
   }),
   text: plain([`Hi ${fullName},`, '', 'Your password was changed.', `When: ${when || new Date().toISOString()}`, footer(brand)]),
 });
-
-/* ─── REGISTRATION ─── */
 
 const registrationReceived = ({ brand, name, businessName, planName, amount, currency, dueDate, invoiceNumber, paymentLink, supportEmail }) => ({
   subject: `We received your registration — ${businessName}`,
@@ -301,8 +297,6 @@ const pendingExpired = ({ brand, name, businessName }) => ({
   text: plain([`Hi ${name},`, '', `Registration for ${businessName} expired.`, footer(brand)]),
 });
 
-/* ─── STAFF ─── */
-
 const staffWelcome = ({ brand, fullName, businessName, email, temporaryPassword, role, loginUrl }) => ({
   subject: `You've been added to ${businessName}`,
   html: layout(brand, {
@@ -353,8 +347,6 @@ const roleChanged = ({ brand, fullName, businessName, oldRole, newRole }) => ({
   }),
   text: plain([`Hi ${fullName},`, '', `Your role at ${businessName} changed: ${oldRole} → ${newRole}`, footer(brand)]),
 });
-
-/* ─── OPERATIONS ─── */
 
 const lowStockAlert = ({ brand, businessName, productName, qty, threshold, productUrl }) => ({
   subject: `Low stock: ${productName}`,
@@ -455,8 +447,6 @@ const weeklyReport = ({ brand, businessName, weekStart, weekEnd, totalSales, tot
   ]),
 });
 
-/* ─── SUBSCRIPTION ─── */
-
 const subscriptionPaid = ({ brand, businessName, planName, amount, currency, periodStart, periodEnd, reference }) => ({
   subject: `Subscription payment received — ${money(amount, currency)}`,
   html: layout(brand, {
@@ -546,8 +536,6 @@ const planCancelled = ({ brand, businessName, planName, endsAt }) => ({
   text: plain([`${planName} for ${businessName} cancelled.`, `Ends: ${endsAt || 'end of period'}`, footer(brand)]),
 });
 
-/* ─── PURCHASE ORDERS ─── */
-
 const purchaseOrder = ({ brand, businessName, supplierName, poNumber, items, subtotal, tax, shipping, total, currency, expectedAt, notes, pdfUrl, businessContact }) => ({
   subject: `Purchase Order ${poNumber} from ${businessName}`,
   html: layout(brand, {
@@ -612,8 +600,6 @@ const purchaseOrderCancelled = ({ brand, businessName, supplierName, poNumber, r
   }),
   text: plain([`PO ${poNumber} cancelled by ${businessName}.`, reason || '', footer(brand)]),
 });
-
-/* ─── INVOICES ─── */
 
 const invoice = ({
   brand,
@@ -1052,8 +1038,6 @@ const invoiceCancelled = ({ brand, businessName, customerName, invoiceNumber, re
   text: plain([`Invoice ${invoiceNumber} cancelled by ${businessName}.`, reason || '', footer(brand)]),
 });
 
-/* ─── ADMIN NOTIFICATIONS ─── */
-
 const adminNewPending = ({ brand, businessName, ownerName, ownerEmail, ownerPhone, country, businessType, registeredAt, reviewUrl }) => ({
   subject: `New registration pending — ${businessName}`,
   html: layout(brand, {
@@ -1146,6 +1130,48 @@ const adminBackupFailed = ({ brand, error, at }) => ({
   text: plain(['Backup failed.', `Error: ${error || 'Unknown'}`, `At: ${at || new Date().toISOString()}`, footer(brand)]),
 });
 
+const adminBackupSuccess = ({
+  brand,
+  filename,
+  sizeBytes,
+  sizeHuman,
+  durationMs,
+  collections,
+  at,
+  downloadUrl,
+}) => ({
+  subject: `Backup completed — ${filename}`,
+  html: layout(brand, {
+    title: 'Backup completed',
+    preheader: `Backup ${filename} finished successfully`,
+    body: `<p style="margin:0 0 12px 0;">Automatic backup completed successfully.</p>
+           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;">
+             <tr><td style="padding:16px;">
+               <p style="margin:0 0 4px 0;font-size:13px;color:#166534;">Filename</p>
+               <p style="margin:0 0 12px 0;font-size:14px;font-family:monospace;color:#14532d;">${escapeHtml(filename)}</p>
+               <p style="margin:0 0 4px 0;font-size:13px;color:#166534;">Size</p>
+               <p style="margin:0 0 12px 0;font-size:14px;color:#14532d;">${escapeHtml(sizeHuman || `${sizeBytes || 0} B`)}</p>
+               <p style="margin:0 0 4px 0;font-size:13px;color:#166534;">Duration</p>
+               <p style="margin:0 0 12px 0;font-size:14px;color:#14532d;">${escapeHtml(((durationMs || 0) / 1000).toFixed(1))}s</p>
+               <p style="margin:0 0 4px 0;font-size:13px;color:#166534;">Collections</p>
+               <p style="margin:0 0 12px 0;font-size:14px;color:#14532d;">${escapeHtml(String((collections || []).length))}</p>
+               <p style="margin:0 0 4px 0;font-size:13px;color:#166534;">When</p>
+               <p style="margin:0;font-size:14px;color:#14532d;">${escapeHtml(at || new Date().toISOString())}</p>
+             </td></tr>
+           </table>`,
+    cta: downloadUrl ? cta(downloadUrl, 'Download backup') : undefined,
+  }),
+  text: plain([
+    `Backup ${filename} completed.`,
+    `Size: ${sizeHuman || `${sizeBytes || 0} B`}`,
+    `Duration: ${((durationMs || 0) / 1000).toFixed(1)}s`,
+    `Collections: ${(collections || []).length}`,
+    `At: ${at || new Date().toISOString()}`,
+    downloadUrl || '',
+    footer(brand),
+  ]),
+});
+
 const adminRestoreComplete = ({ brand, filename, collections, at }) => ({
   subject: 'Backup restore completed',
   html: layout(brand, {
@@ -1199,6 +1225,7 @@ module.exports = {
     adminPendingDigest,
     adminServiceDown,
     adminBackupFailed,
+    adminBackupSuccess,
     adminRestoreComplete,
   },
 };

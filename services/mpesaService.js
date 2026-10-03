@@ -68,7 +68,7 @@ function buildConfigFromEnv() {
 
 let CONFIG = buildConfigFromEnv();
 
-let tokenCache = { token: null, expiresAt: 0 };
+const tokenCache = new Map();
 
 const seenCallbacks = new Map();
 const CALLBACK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -86,18 +86,14 @@ function configure(overrides = {}) {
 
   if (logger) LOGGER = logger;
 
-  if (
-    'consumerKey' in rest ||
-    'consumerSecret' in rest ||
-    'baseUrl' in rest
-  ) {
-    tokenCache = { token: null, expiresAt: 0 };
+  if ('consumerKey' in rest || 'consumerSecret' in rest || 'baseUrl' in rest) {
+    tokenCache.clear();
   }
 }
 
 function reloadFromEnv() {
   CONFIG = buildConfigFromEnv();
-  tokenCache = { token: null, expiresAt: 0 };
+  tokenCache.clear();
   LOGGER.info('[mpesa] Config reloaded from env');
 }
 
@@ -105,31 +101,76 @@ function getConfig() {
   return { ...CONFIG };
 }
 
-async function getAccessToken() {
-  const now = Date.now();
+function resolveCredsFromConfig() {
+  return {
+    baseUrl: CONFIG.baseUrl,
+    consumerKey: CONFIG.consumerKey,
+    consumerSecret: CONFIG.consumerSecret,
+    shortcode: CONFIG.shortCode,
+    tillNumber: CONFIG.tillNumber,
+    passkey: CONFIG.passkey,
+    callbackUrl: CONFIG.callbackUrl,
+    transactionType: CONFIG.transactionType,
+  };
+}
 
-  if (tokenCache.token && tokenCache.expiresAt > now + 60000) {
-    return tokenCache.token;
+async function resolveCreds(tenantId) {
+  if (!tenantId || tenantId === 'platform') {
+    return resolveCredsFromConfig();
   }
 
-  if (!CONFIG.consumerKey || !CONFIG.consumerSecret) {
+  try {
+    const Tenant = require('../models/admin/Tenant');
+    const tenant = await Tenant.findById(tenantId).lean();
+    if (!tenant || !tenant.mpesa || !tenant.mpesa.consumerKey) return null;
+
+    const m = tenant.mpesa;
+    return {
+      baseUrl: m.baseUrl || CONFIG.baseUrl,
+      consumerKey: m.consumerKey,
+      consumerSecret: m.consumerSecret,
+      shortcode: m.shortcode,
+      tillNumber: m.tillNumber || null,
+      passkey: m.passkey,
+      callbackUrl: m.callbackUrl || CONFIG.callbackUrl,
+      transactionType: m.transactionType || CONFIG.transactionType,
+    };
+  } catch (err) {
+    LOGGER.error({ err: err.message, tenantId }, '[mpesa] resolveCreds failed');
+    return null;
+  }
+}
+
+function credKey(creds) {
+  return `${creds.baseUrl}|${creds.consumerKey}`;
+}
+
+async function getAccessToken(creds) {
+  const c = creds || resolveCredsFromConfig();
+  const now = Date.now();
+
+  if (!c.consumerKey || !c.consumerSecret) {
     throw new MpesaError('M-PESA credentials not configured', 'CONFIG_MISSING');
   }
 
-  const auth = Buffer.from(
-    `${CONFIG.consumerKey}:${CONFIG.consumerSecret}`
-  ).toString('base64');
+  const key = credKey(c);
+  const cached = tokenCache.get(key);
+  if (cached && cached.expiresAt > now + 60000) {
+    return cached.token;
+  }
+
+  const auth = Buffer.from(`${c.consumerKey}:${c.consumerSecret}`).toString('base64');
 
   try {
-    const { data } = await axios.get(`${CONFIG.baseUrl}${ENDPOINTS.OAUTH}`, {
+    const { data } = await axios.get(`${c.baseUrl}${ENDPOINTS.OAUTH}`, {
       headers: { Authorization: `Basic ${auth}` },
       timeout: 15000,
     });
 
-    tokenCache = {
+    tokenCache.set(key, {
       token: data.access_token,
       expiresAt: now + Number(data.expires_in) * 1000,
-    };
+    });
 
     return data.access_token;
   } catch (error) {
@@ -156,10 +197,8 @@ function getTimestamp() {
   );
 }
 
-function generatePassword(timestamp) {
-  return Buffer.from(
-    `${CONFIG.shortCode}${CONFIG.passkey}${timestamp}`
-  ).toString('base64');
+function generatePassword(shortcode, passkey, timestamp) {
+  return Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
 }
 
 function normalizePhone(phone) {
@@ -169,28 +208,27 @@ function normalizePhone(phone) {
   return p;
 }
 
-function resolvePartyB() {
-  return CONFIG.tillNumber || CONFIG.shortCode;
-}
-
 async function initiateSTKPush({
   phone,
   amount,
   accountReference = 'Subscription',
   description = 'App Subscription Payment',
+  creds,
 }) {
-  if (!CONFIG.shortCode || !CONFIG.passkey || !CONFIG.callbackUrl) {
+  const c = creds || resolveCredsFromConfig();
+
+  if (!c.shortcode || !c.passkey || !c.callbackUrl) {
     return {
       success: false,
       error: {
-        errorMessage: 'M-PESA config missing (shortCode, passkey, callbackUrl)',
+        errorMessage: 'M-PESA config missing (shortcode, passkey, callbackUrl)',
       },
     };
   }
 
   let token;
   try {
-    token = await getAccessToken();
+    token = await getAccessToken(c);
   } catch (err) {
     return {
       success: false,
@@ -199,36 +237,32 @@ async function initiateSTKPush({
   }
 
   const timestamp = getTimestamp();
-  const password = generatePassword(timestamp);
+  const password = generatePassword(c.shortcode, c.passkey, timestamp);
   const normalizedPhone = normalizePhone(phone);
-  const partyB = resolvePartyB();
+  const partyB = c.tillNumber || c.shortcode;
 
   const payload = {
-    BusinessShortCode: CONFIG.shortCode,
+    BusinessShortCode: c.shortcode,
     Password: password,
     Timestamp: timestamp,
-    TransactionType: CONFIG.transactionType,
+    TransactionType: c.transactionType || 'CustomerPayBillOnline',
     Amount: Math.round(amount),
     PartyA: normalizedPhone,
     PartyB: partyB,
     PhoneNumber: normalizedPhone,
-    CallBackURL: CONFIG.callbackUrl,
+    CallBackURL: c.callbackUrl,
     AccountReference: accountReference,
     TransactionDesc: description,
   };
 
   try {
-    const { data } = await axios.post(
-      `${CONFIG.baseUrl}${ENDPOINTS.STK_PUSH}`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-      }
-    );
+    const { data } = await axios.post(`${c.baseUrl}${ENDPOINTS.STK_PUSH}`, payload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    });
 
     return {
       success: true,
@@ -245,10 +279,12 @@ async function initiateSTKPush({
   }
 }
 
-async function querySTKStatus(checkoutRequestId) {
+async function querySTKStatus(checkoutRequestId, creds) {
+  const c = creds || resolveCredsFromConfig();
+
   let token;
   try {
-    token = await getAccessToken();
+    token = await getAccessToken(c);
   } catch (err) {
     return {
       success: false,
@@ -257,27 +293,23 @@ async function querySTKStatus(checkoutRequestId) {
   }
 
   const timestamp = getTimestamp();
-  const password = generatePassword(timestamp);
+  const password = generatePassword(c.shortcode, c.passkey, timestamp);
 
   const payload = {
-    BusinessShortCode: CONFIG.shortCode,
+    BusinessShortCode: c.shortcode,
     Password: password,
     Timestamp: timestamp,
     CheckoutRequestID: checkoutRequestId,
   };
 
   try {
-    const { data } = await axios.post(
-      `${CONFIG.baseUrl}${ENDPOINTS.STK_QUERY}`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-      }
-    );
+    const { data } = await axios.post(`${c.baseUrl}${ENDPOINTS.STK_QUERY}`, payload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    });
 
     return {
       success: true,
@@ -340,7 +372,7 @@ function isSafaricomIp(ip) {
 
 async function waitForResult(
   checkoutRequestId,
-  { timeoutMs = 300000, intervalMs = 3000 } = {}
+  { timeoutMs = 300000, intervalMs = 3000, creds } = {}
 ) {
   const start = Date.now();
   const pendingCodes = new Set([
@@ -350,7 +382,7 @@ async function waitForResult(
   ]);
 
   while (Date.now() - start < timeoutMs) {
-    const r = await querySTKStatus(checkoutRequestId);
+    const r = await querySTKStatus(checkoutRequestId, creds);
     if (r.success && !pendingCodes.has(r.resultCode)) {
       return r;
     }
@@ -367,6 +399,7 @@ module.exports = {
   configure,
   reloadFromEnv,
   getConfig,
+  resolveCreds,
   getAccessToken,
   initiateSTKPush,
   querySTKStatus,

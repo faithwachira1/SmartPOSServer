@@ -14,8 +14,11 @@ const schema = new mongoose.Schema(
     amount: { type: Number, required: true },
     currency: { type: String, required: true },
     status: { type: String, enum: STATUSES, default: 'pending' },
-    providerRef: String,
+    providerRef: { type: String, index: true },
     providerPayload: mongoose.Schema.Types.Mixed,
+    mpesaReceipt: { type: String, default: null, index: true },
+    paidAt: { type: Date, default: null },
+    failureReason: { type: String, default: null },
     refundedAt: Date,
     refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
@@ -30,6 +33,7 @@ const schema = new mongoose.Schema(
 schema.index({ tenantId: 1, saleId: 1 });
 schema.index({ tenantId: 1, invoiceId: 1 });
 schema.index({ tenantId: 1, providerRef: 1 });
+schema.index({ tenantId: 1, mpesaReceipt: 1 }, { sparse: true });
 schema.index({ tenantId: 1, status: 1 });
 schema.index({ tenantId: 1, purpose: 1, createdAt: -1 });
 schema.index({ tenantId: 1, localId: 1 }, { sparse: true });

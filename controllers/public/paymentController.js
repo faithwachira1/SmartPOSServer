@@ -25,6 +25,9 @@ function platformCreds() {
     consumerSecret: env.mpesa.consumerSecret,
     passkey: env.mpesa.passkey,
     callbackUrl: env.mpesa.callbackUrl,
+    tillNumber: env.mpesa.tillNumber,
+    transactionType: env.mpesa.transactionType,
+    baseUrl: env.mpesa.baseUrl,
   };
 }
 
@@ -56,25 +59,37 @@ const sendStkForInvoice = asyncHandler(async (req, res) => {
     tenant.status === 'pending_user' ||
     tenant.status === 'rejected';
 
-  const creds = isSubscriptionInvoice
-    ? platformCreds()
-    : await mpesaService.resolveCreds(invoice.tenantId);
+  let creds;
+  if (isSubscriptionInvoice) {
+    creds = platformCreds();
+  } else {
+    creds = await mpesaService.resolveCreds(invoice.tenantId);
+    if (!creds) creds = platformCreds();
+  }
 
   if (!creds) {
     throw ApiError.internal(
-      'MPESA_PLATFORM_NOT_CONFIGURED',
-      'Platform M-Pesa credentials are not configured'
+      'MPESA_NOT_CONFIGURED',
+      'M-Pesa credentials are not configured'
     );
   }
 
-  const stk = await mpesaService.stkPush(creds, {
+  const stk = await mpesaService.initiateSTKPush({
     phone,
     amount: invoice.amountDue,
-    accountRef: invoice.invoiceNumber,
+    accountReference: invoice.invoiceNumber,
     description: isSubscriptionInvoice
       ? `Subscription ${invoice.invoiceNumber}`
       : `Payment for ${invoice.invoiceNumber}`,
+    creds,
   });
+
+  if (!stk.success) {
+    throw ApiError.badRequest(
+      'STK_FAILED',
+      stk.error?.errorMessage || 'Could not initiate M-Pesa payment'
+    );
+  }
 
   await Invoice.updateOne(
     { _id: invoice._id },
@@ -114,8 +129,11 @@ const checkStkStatus = asyncHandler(async (req, res) => {
   }
 
   const payment = await Payment.findOne({
-    providerRef: checkoutRequestId,
     purpose: 'invoice',
+    $or: [
+      { providerRef: checkoutRequestId },
+      { mpesaReceipt: checkoutRequestId },
+    ],
   }).lean();
 
   if (!payment) {
@@ -135,7 +153,8 @@ const checkStkStatus = asyncHandler(async (req, res) => {
     amountPaid: invoice?.amountPaid || 0,
     amountDue: invoice?.amountDue || 0,
     currency: invoice?.currency || payment.currency,
-    receipt: payment.status === 'success' ? payment.providerRef : null,
+    receipt: payment.mpesaReceipt || null,
+    failureReason: payment.failureReason || null,
   });
 });
 
